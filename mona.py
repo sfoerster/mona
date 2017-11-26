@@ -18302,7 +18302,7 @@ Arguments:
 		commands["encode"]			= MnCommand("encode","Encode a series of bytes",encUsage,procEnc,"enc")
 		commands["unicodealign"]	= MnCommand("unicodealign","Generate venetian alignment code for unicode stack buffer overflow",unicodealignUsage,procUnicodeAlign,"ua")
 		#commands["heapcookie"]      = MnCommand("heapcookie","Looks for writeable pointers that can help avoiding cookie check during arbitrary free",heapCookieUsage,procHeapCookie,"hc")
-		if __DEBUGGERAPP__ == "Immunity Debugger":
+		if __DEBUGGERAPP__ == "Immunity Debugger" or __DEBUGGERAPP__ == 'x64dbg':
 			commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
 			commands["calltrace"]	= MnCommand("calltrace","Log all CALL instructions",calltraceUsage,procCallTrace,"ct")
 		if __DEBUGGERAPP__ == "WinDBG":
