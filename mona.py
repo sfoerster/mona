@@ -59,12 +59,19 @@ except:
 		import sys
 		sys.exit(e)
 	except Exception:
+		try: 
+			import pykd
+			import x64dbgpylib as dbglib
+			from x64dbgpylib import LogBpHook
+			dbglib.checkVersion()
+			arch = dbglib.getArchitecture()
+			__DEBUGGERAPP__ = "x64dbg"
 		#import traceback
-		print "Do not run this script outside of a debugger !"
-		#print traceback.format_exc()
-		import sys
-		exit(1)
-
+		except Exception:
+			print "Do not run this script outside of a debugger !"
+			#print traceback.format_exc()
+			import sys
+			exit(1)
 import getopt
 
 try:
@@ -14996,7 +15003,7 @@ def main(args):
 			validstypes["fileformat"] = "fileformat"
 			exploittypes = [ "fileformat","network client (tcp)","network client (udp)" ]
 			errorfound = False
-			if __DEBUGGERAPP__ == "WinDBG" or "t" in args:
+			if __DEBUGGERAPP__ == "WinDBG" or __DEBUGGERAPP__ == 'x64dbg' or "t" in args:
 				if "t" in args:
 					if type(args["t"]).__name__.lower() != "bool":
 						skeltype = args["t"].lower()
@@ -18409,6 +18416,9 @@ Arguments:
 	
 	return ""
 
+def mona(args_str):
+	main(args_str.split())
+
 if __name__ == "__main__":
 	dbg.log("Hold on...")
 	# do we need to profile ?
@@ -18429,7 +18439,7 @@ if __name__ == "__main__":
 		dbg.log(" ***** TIME *****")
 		p.sort_stats('time', 'cum').print_stats(30)
 	# clear memory
-	if __DEBUGGERAPP__ == "WinDBG":
+	if __DEBUGGERAPP__ == "WinDBG" or __DEBUGGERAPP__ == "x64dbg":
 		dbglib.clearvars()
 	try:
 	#	allvars = [var for var in globals() if var[0] != "_"]
