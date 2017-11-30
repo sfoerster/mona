@@ -7,9 +7,9 @@ Installation instructions
 -------------------------
 
 ### x64dbg
-First, get [x64dbgpy](https://github.com/x64dbg/x64dbgpy). You can grab a release [here](https://ci.appveyor.com/project/mrexodia/x64dbg-python/build/artifacts). Drop the `plugins` directory in your `x64dbg` application folder, either `x32` or `x64`. 
+First, get [x64dbgpy](https://github.com/x64dbg/x64dbgpy) for x64dbg Python support. You can grab a release [here](https://ci.appveyor.com/project/mrexodia/x64dbg-python/build/artifacts). Drop the contents of the `plugins` directory into your x64dbg `plugins` folder. 
 
-Then, put `mona.py` into the `plugins/x64dbgpy` folder. You will also need in this folder the `pykd.py` and `x64dbgpylib.py` files from https://github.com/x64dbg/x64dbgpylib. Finally, put the `clean_mona.py` script inside `x64dbgpy/x64dbgpy/autorun`. 
+Then, put `mona.py` into the `plugins/x64dbgpy` folder. You will also need the `pykd.py` and `x64dbgpylib.py` files from https://github.com/x64dbg/x64dbgpylib. Finally, put the `clean_mona.py` script in `x64dbgpy/x64dbgpy/autorun`. 
 
 Now, run mona commands at the x64dbg Python command line with `mona.mona(“command”)`.
 
