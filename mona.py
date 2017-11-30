@@ -17990,7 +17990,7 @@ Note : you can use the same options as with pattern_create and pattern_offset in
 
         suggestUsage = """Suggests an exploit buffer structure based on pointers to a cyclic pattern
 Note : you can use the same options as with pattern_create and pattern_offset in terms of defining the character set to use
-Mandatory argument in case you are using WinDBG:
+Mandatory argument in case you are using WinDBG or x64dbg:
     -t <type:arg> : skeletontype. Valid types are :
                 tcpclient:port, udpclient:port, fileformat:extension
                 Examples : -t tcpclient:21
