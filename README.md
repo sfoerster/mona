@@ -1,7 +1,9 @@
 ====
 mona
 
-Fork of Corelan’s mona.py for x64dbg
+Fork of Corelan’s mona.py for x64dbg. mona is a Windows exploit development swiss army knife. It supports ROP techniques, SEH, cyclic patterns, etc.
+
+To see all commands and usage details, run mona with the `help` command.
 
 Installation instructions
 -------------------------
