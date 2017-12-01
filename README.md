@@ -24,10 +24,10 @@ See https://github.com/corelan/windbglib
 Some Supported Commands
 -------------------------
 
-`modules` — Show all loaded modules and their properties (ASLR, Rebase, DEP, etc.)
-`heap` — Show heap related information
-`seh` — Find pointers to assist with SEH overwrite exploits
-`jmp` — Find pointers that will allow you to jump to a register
-`rop` — Finds gadgets that can be used in a ROP exploit and do ROP magic with them
-`jop` — Finds gadgets that can be used in a JOP exploit
-`pattern_offset` — Find location of 4 bytes in a cyclic pattern
+* `modules` — Show all loaded modules and their properties (ASLR, Rebase, DEP, etc.)
+* `heap` — Show heap related information
+* `seh` — Find pointers to assist with SEH overwrite exploits
+* `jmp` — Find pointers that will allow you to jump to a register
+* `rop` — Finds gadgets that can be used in a ROP exploit and do ROP magic with them
+* `jop` — Finds gadgets that can be used in a JOP exploit
+* `pattern_offset` — Find location of 4 bytes in a cyclic pattern
