@@ -2975,9 +2975,11 @@ class MnModule:
                         nr_of_names = struct.unpack('<L',dbg.readMemory(eatAddr + 0x18,4))[0]
                         rva_of_names = self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x20,4))[0]
                         address_of_functions =  self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x1c,4))[0]
+                        address_of_ordinals =  self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x24,4))[0]
                         for i in range(0, nr_of_names):
                             eatName = dbg.readString(self.moduleBase + struct.unpack('<L',dbg.readMemory(rva_of_names + (4 * i),4))[0])
-                            eatAddress = self.moduleBase + struct.unpack('<L',dbg.readMemory(address_of_functions + (4 * i),4))[0]
+                            ordinal_val = struct.unpack('<H',dbg.readMemory(address_of_ordinals + (2 * i),2))[0]
+                            eatAddress = self.moduleBase + struct.unpack('<L',dbg.readMemory(address_of_functions + (4 * ordinal_val),4))[0]
                             eatlist[eatAddress] = eatName
                 self.EAT = eatlist
             except:
@@ -6131,10 +6133,25 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
                                 if not thetype in ropfuncoffsets:
                                     ropfuncoffsets[thetype] = [fn]
                 
+                # Create a temporary "tfn" variable
+                # Split the "thisfuncname" by "!" -- a typical value is kernel32!virtualalloc
+                tfn = thisfuncname.split('!')
+                #
+                # Grab the 2nd value which is the function name "The Function Name (tfn)"
+                # Convert it to lowercase just in case
+                if len(tfn) > 1:
+                    tfn = tfn[1].lower()
+                else:
+                    tfn = tfn.lower()
+
                 # see if it's a function we are looking for
                 for funcsearch in functionnames:
                     funcsearch = funcsearch.lower()
-                    if thisfuncname.find(funcsearch) > -1:
+                    #if thisfuncname.find(funcsearch) > -1:
+                    # Instead of using "find" which will find for example:
+                    #   VirtualAlloc, VirtualAllocEx, VirtualAllocExNuma etc..
+                    # just check to see if the two strings are equal
+                    if tfn == funcsearch:
                         extra = ""
                         extrafunc = ""
                         if isrebased:
@@ -9142,6 +9159,7 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode = "iat"):
             ropfuncs,ropfuncoffsets = findROPFUNC(modulecriteria,criteria, [rfuncsearch])
         else:
             ropfuncs,ropfuncoffsets = findROPFUNC(modulecriteria)
+
         silent = oldsilent
         #first look for good one
         #dbg.log("Found %d pointers" % len(ropfuncs))
