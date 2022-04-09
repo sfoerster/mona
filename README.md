@@ -3,7 +3,17 @@ mona
 
 Fork of Corelan’s mona.py for x64dbg. mona is a Windows exploit development swiss army knife. It supports ROP techniques, SEH, cyclic patterns, etc.
 
-To see all commands and usage details, run mona with the `help` command.
+### What is mona.py?
+
+Mona.py is a python script that can be used to automate and speed up specific searches while developing exploits (typically for the Windows platform).
+It runs on Immunity Debugger and WinDBG, and requires python 2.7.
+Although it runs in WinDBG x64, the majority of its features were written specifically for 32bit processes.
+
+For more info on mona.py and how to use it, please consider taking one of Corelan's exploit development classes:
+
+https://www.corelan-training.com
+
+
 
 Installation instructions
 -------------------------
@@ -16,18 +26,16 @@ Then, put `mona.py` into the `plugins/x64dbgpy` folder. You will also need the `
 Now, run mona commands at the x64dbg Python command line with `mona.mona(“command”)`.
 
 ### Immunity Debugger
-Simply drop mona.py into the 'PyCommands' folder (inside the Immunity Debugger application folder).
+1. drop mona.py into the 'PyCommands' folder (inside the Immunity Debugger application folder).
+2. install Python 2.7.14 (or a higher 2.7.xx version) into c:\python27, thus overwriting the version that was bundled with Immunity. This is needed to avoid TLS issues when trying to update mona.  Make sure you are installing the 32bit version of python.
 
 ### WinDBG
 See https://github.com/corelan/windbglib
 
-Some Supported Commands
--------------------------
 
-* `modules` — Show all loaded modules and their properties (ASLR, Rebase, DEP, etc.)
-* `heap` — Show heap related information
-* `seh` — Find pointers to assist with SEH overwrite exploits
-* `jmp` — Find pointers that will allow you to jump to a register
-* `rop` — Finds gadgets that can be used in a ROP exploit and do ROP magic with them
-* `jop` — Finds gadgets that can be used in a JOP exploit
-* `pattern_offset` — Find location of 4 bytes in a cyclic pattern
+
+notes
+-----
+
+mona.py has been inventoried at Rawsec's CyberSecurity Inventory
+[![Rawsec's CyberSecurity Inventory](https://inventory.rawsec.ml/img/badges/Rawsec-inventoried-FF5050_plastic.svg)](https://inventory.rawsec.ml/)

